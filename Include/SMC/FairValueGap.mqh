@@ -72,7 +72,7 @@ public:
 private:
    void              DetectFVGs();
    void              UpdateStates();
-   ENUM_FVG_PROBABILITY DetermineProbability(const int barIndex, const bool isBullish) const;
+   ENUM_FVG_PROBABILITY DetermineProbability(const int barIndex, const bool isBullish);
    void              DrawFVGs();
   };
 
@@ -269,9 +269,9 @@ void CSmcFairValueGap::DetectFVGs()
             m_bullishFVGs[m_bullishCount].age             = i - 1;
             m_bullishFVGs[m_bullishCount].isValid         = true;
             m_bullishFVGs[m_bullishCount].probability     =
-               DetermineProbability(i - 1, true);
+               (ENUM_ZONE_PROBABILITY)DetermineProbability(i - 1, true);
             m_bullishFVGs[m_bullishCount].score =
-               (m_bullishFVGs[m_bullishCount].probability == FVG_HIGH_PROB) ? 0.8 : 0.5;
+               (m_bullishFVGs[m_bullishCount].probability == PROB_HIGH) ? 0.8 : 0.5;
             m_bullishCount++;
            }
         }
@@ -292,9 +292,9 @@ void CSmcFairValueGap::DetectFVGs()
             m_bearishFVGs[m_bearishCount].age             = i - 1;
             m_bearishFVGs[m_bearishCount].isValid         = true;
             m_bearishFVGs[m_bearishCount].probability     =
-               DetermineProbability(i - 1, false);
+               (ENUM_ZONE_PROBABILITY)DetermineProbability(i - 1, false);
             m_bearishFVGs[m_bearishCount].score =
-               (m_bearishFVGs[m_bearishCount].probability == FVG_HIGH_PROB) ? 0.8 : 0.5;
+               (m_bearishFVGs[m_bearishCount].probability == PROB_HIGH) ? 0.8 : 0.5;
             m_bearishCount++;
            }
         }
@@ -305,7 +305,7 @@ void CSmcFairValueGap::DetectFVGs()
 //| FVG確率分類                                                        |
 //+------------------------------------------------------------------+
 ENUM_FVG_PROBABILITY CSmcFairValueGap::DetermineProbability(const int barIndex,
-      const bool isBullish) const
+      const bool isBullish)
   {
 //--- 3本すべて同方向の場合は高確率
    bool allSame = true;

@@ -33,13 +33,16 @@ private:
    bool            m_scalerLoaded;    // Scaler loaded flag / スケーラー読み込みフラグ
    int             m_predCount;        // Prediction counter / 予測カウンター
    static const int REINIT_INTERVAL;  // Reinit interval / 再初期化間隔
+   bool            m_probaChecked;    // Whether PredictProba has been tested
+   bool            m_probaSupported;  // Whether PredictProba works (zipmap=False)
+   bool            m_labelDirectOk;   // Whether PredictLabelDirect works (ZipMap fallback)
 
    //+------------------------------------------------------------------+
    //| Check if value is NaN or Inf / NaNまたはInfかチェック           |
    //+------------------------------------------------------------------+
    static bool IsValidValue(const double value)
      {
-      return !MathIsNaN(value) && !MathIsInfinity(value);
+      return MathIsValidNumber(value);
      }
 
    //+------------------------------------------------------------------+
@@ -78,6 +81,9 @@ public:
       m_isLoaded = false;
       m_scalerLoaded = false;
       m_predCount = 0;
+      m_probaChecked = false;
+      m_probaSupported = false;
+      m_labelDirectOk = false;
       ArrayResize(m_scalerMean, 0);
       ArrayResize(m_scalerScale, 0);
      }
@@ -92,23 +98,34 @@ public:
 
    //+------------------------------------------------------------------+
    //| Load ONNX model from file / ファイルからONNXモデルを読み込み     |
+   //| Tries MQL5/Files/ first, then Common/Files/ (for Tester)        |
+   //| まず MQL5/Files/ を試し、失敗時は Common/Files/ にフォールバック   |
    //+------------------------------------------------------------------+
    bool LoadFromFile(const string modelPath)
      {
       if(m_isLoaded)
          Release();
       
+      // Try terminal-specific folder first (MQL5/Files/)
       m_handle = OnnxCreate(modelPath, ONNX_DEFAULT);
       if(m_handle == INVALID_HANDLE)
         {
-         Print("Failed to load ONNX model from: ", modelPath);
-         Print("Error: ", GetLastError());
-         return false;
+         // Fallback to common folder (Terminal/Common/Files/) for Strategy Tester
+         ResetLastError();
+         m_handle = OnnxCreate(modelPath, ONNX_COMMON_FOLDER);
+         if(m_handle == INVALID_HANDLE)
+           {
+            Print("Failed to load ONNX model from: ", modelPath);
+            Print("Error: ", GetLastError());
+            return false;
+           }
+         Print("ONNX model loaded from Common folder: ", modelPath);
         }
+      else
+         Print("ONNX model loaded successfully: ", modelPath);
       
       m_isLoaded = true;
       m_predCount = 0;
-      Print("ONNX model loaded successfully: ", modelPath);
       return true;
      }
 
@@ -158,18 +175,24 @@ public:
      }
 
    //+------------------------------------------------------------------+
-   //| Load scaler parameters from binary files / バイナリファイルからスケーラーパラメータを読み込み |
-   //| Note: Simplified implementation - reads as binary doubles      |
-   //| 注意: 簡易実装 - バイナリdoubleとして読み込み                    |
+   //| Load scaler parameters from binary files                         |
+   //| バイナリファイルからスケーラーパラメータを読み込み                 |
+   //| Files must be placed in MQL5/Files/ (same as ONNX models)       |
+   //| ファイルは MQL5/Files/ に配置（ONNXモデルと同じ場所）            |
    //+------------------------------------------------------------------+
    bool LoadScaler(const string meanFile, const string scaleFile)
      {
       // Load mean values / 平均値を読み込み
-      int meanHandle = FileOpen(meanFile, FILE_READ | FILE_BIN | FILE_COMMON);
+      int meanHandle = FileOpen(meanFile, FILE_READ | FILE_BIN);
       if(meanHandle == INVALID_HANDLE)
         {
-         Print("Failed to open mean file: ", meanFile);
-         return false;
+         // Fallback: try FILE_COMMON for backward compatibility
+         meanHandle = FileOpen(meanFile, FILE_READ | FILE_BIN | FILE_COMMON);
+         if(meanHandle == INVALID_HANDLE)
+           {
+            Print("Failed to open mean file: ", meanFile, " (error: ", GetLastError(), ")");
+            return false;
+           }
         }
       
       ulong fileSize = FileSize(meanHandle);
@@ -180,12 +203,17 @@ public:
       FileClose(meanHandle);
       
       // Load scale values / スケール値を読み込み
-      int scaleHandle = FileOpen(scaleFile, FILE_READ | FILE_BIN | FILE_COMMON);
+      int scaleHandle = FileOpen(scaleFile, FILE_READ | FILE_BIN);
       if(scaleHandle == INVALID_HANDLE)
         {
-         Print("Failed to open scale file: ", scaleFile);
-         ArrayResize(m_scalerMean, 0);
-         return false;
+         // Fallback: try FILE_COMMON for backward compatibility
+         scaleHandle = FileOpen(scaleFile, FILE_READ | FILE_BIN | FILE_COMMON);
+         if(scaleHandle == INVALID_HANDLE)
+           {
+            Print("Failed to open scale file: ", scaleFile, " (error: ", GetLastError(), ")");
+            ArrayResize(m_scalerMean, 0);
+            return false;
+           }
         }
       
       fileSize = FileSize(scaleHandle);
@@ -193,7 +221,7 @@ public:
       
       if(scaleCount != count)
         {
-         Print("Mean and scale arrays have different sizes");
+         Print("Mean and scale arrays have different sizes: ", count, " vs ", scaleCount);
          FileClose(scaleHandle);
          ArrayResize(m_scalerMean, 0);
          return false;
@@ -204,7 +232,7 @@ public:
       FileClose(scaleHandle);
       
       m_scalerLoaded = true;
-      Print("Scaler loaded: ", count, " features");
+      Print("Scaler loaded: ", count, " features from ", meanFile);
       return true;
      }
 
@@ -240,7 +268,7 @@ public:
      }
 
    //+------------------------------------------------------------------+
-   //| Run prediction / 予測を実行                                       |
+   //| Run prediction (single-output model) / 予測を実行（単一出力モデル）|
    //+------------------------------------------------------------------+
    bool Predict(const float &features[], float &output[])
      {
@@ -253,19 +281,14 @@ public:
       if(!ValidateFeatures(features))
          return false;
       
-      // Periodic reinit for memory management / メモリ管理のための定期的な再初期化
       m_predCount++;
       if(m_predCount >= REINIT_INTERVAL)
-        {
-         // Note: MQL5 doesn't have explicit reinit, but we can track usage
-         // 注意: MQL5には明示的な再初期化がないが、使用状況を追跡可能
          m_predCount = 0;
-        }
       
       // Prepare input array / 入力配列を準備
-      float input[];
-      ArrayResize(input, m_numFeatures);
-      ArrayCopy(input, features);
+      float featInput[];
+      ArrayResize(featInput, m_numFeatures);
+      ArrayCopy(featInput, features);
       
       // Set input shape / 入力形状を設定
       long inputShape[] = {1, m_numFeatures};
@@ -284,21 +307,14 @@ public:
         }
       
       // Run inference / 推論を実行
-      if(!OnnxRun(m_handle, ONNX_NO_CONVERSION, input, output))
+      if(!OnnxRun(m_handle, ONNX_NO_CONVERSION, featInput, output))
         {
-         Print("ONNX inference failed");
-         Print("Error: ", GetLastError());
+         Print("ONNX inference failed, error: ", GetLastError());
          return false;
         }
       
       // Validate output / 出力を検証
       int outputSize = ArraySize(output);
-      if(outputSize != m_numOutputs)
-        {
-         Print("Output size mismatch: expected ", m_numOutputs, ", got ", outputSize);
-         return false;
-        }
-      
       for(int i = 0; i < outputSize; i++)
         {
          if(!IsValidValue(output[i]))
@@ -312,10 +328,207 @@ public:
      }
 
    //+------------------------------------------------------------------+
-   //| Predict and return class index (argmax) / 予測してクラスインデックスを返す（argmax） |
+   //| Run prediction for tree-based classifiers (2-output ONNX)        |
+   //| sklearn/LightGBM ONNX モデル用の予測実行                         |
+   //|   output 0 = predicted labels (int64)                             |
+   //|   output 1 = class probabilities (float, shape [1, num_classes]) |
+   //+------------------------------------------------------------------+
+   bool PredictProba(const float &features[], long &labelOut[], float &probaOut[])
+     {
+      if(!m_isLoaded || m_handle == INVALID_HANDLE)
+         return false;
+      
+      // Already tested and failed → skip immediately
+      if(m_probaChecked && !m_probaSupported)
+         return false;
+      
+      if(!ValidateFeatures(features))
+         return false;
+      
+      m_predCount++;
+      if(m_predCount >= REINIT_INTERVAL)
+         m_predCount = 0;
+      
+      // Prepare input array / 入力配列を準備
+      float featInput[];
+      ArrayResize(featInput, m_numFeatures);
+      ArrayCopy(featInput, features);
+      
+      // Set input shape / 入力形状を設定
+      long inputShape[] = {1, m_numFeatures};
+      if(!OnnxSetInputShape(m_handle, 0, inputShape))
+        {
+         Print("PredictProba: Failed to set input shape, error: ", GetLastError());
+         return false;
+        }
+      
+      // Output 0: label shape [1] / ラベル出力 [1]
+      ArrayResize(labelOut, 1);
+      long labelShape[] = {1};
+      if(!OnnxSetOutputShape(m_handle, 0, labelShape))
+        {
+         Print("PredictProba: Failed to set label output shape, error: ", GetLastError());
+         return false;
+        }
+      
+      // Output 1: probability shape [1, num_classes] / 確率出力 [1, num_classes]
+      ArrayResize(probaOut, m_numOutputs);
+      long probaShape[] = {1, m_numOutputs};
+      if(!OnnxSetOutputShape(m_handle, 1, probaShape))
+        {
+         // ZipMap model detected - mark as unsupported (log once)
+         if(!m_probaChecked)
+           {
+            Print("ONNX INFO: Model uses ZipMap (sequence/map) output. ",
+                  "Switching to label-only mode. ",
+                  "For full probability support, re-export with zipmap=False.");
+            m_probaChecked  = true;
+            m_probaSupported = false;
+           }
+         ResetLastError();
+         return false;
+        }
+      
+      // Run inference with 2 outputs / 2出力で推論を実行
+      if(!OnnxRun(m_handle, ONNX_NO_CONVERSION, featInput, labelOut, probaOut))
+        {
+         Print("PredictProba: ONNX inference failed, error: ", GetLastError());
+         return false;
+        }
+      
+      // Mark as supported
+      if(!m_probaChecked)
+        {
+         m_probaChecked  = true;
+         m_probaSupported = true;
+        }
+      
+      return true;
+     }
+
+   //+------------------------------------------------------------------+
+   //| Predict label only using ONNX_DEFAULT (ZipMap fallback)          |
+   //| ZipMapモデル用フォールバック: ラベルのみ取得                       |
+   //| Uses ONNX_DEFAULT flag to auto-convert map outputs               |
+   //+------------------------------------------------------------------+
+   bool PredictLabelDirect(const float &features[], long &labelOut[])
+     {
+      if(!m_isLoaded || m_handle == INVALID_HANDLE)
+         return false;
+      
+      if(!ValidateFeatures(features))
+         return false;
+      
+      float featInput[];
+      ArrayResize(featInput, m_numFeatures);
+      ArrayCopy(featInput, features);
+      
+      // Set input shape
+      long inputShape[] = {1, m_numFeatures};
+      if(!OnnxSetInputShape(m_handle, 0, inputShape))
+         return false;
+      
+      // Output 0: label shape [1]
+      ArrayResize(labelOut, 1);
+      long labelShape[] = {1};
+      if(!OnnxSetOutputShape(m_handle, 0, labelShape))
+         return false;
+      
+      // Output 1: don't set shape (let runtime auto-handle ZipMap)
+      // Provide a dummy buffer for the map output
+      float dummyProba[];
+      ArrayResize(dummyProba, m_numOutputs);
+      
+      ResetLastError();
+      
+      // Try ONNX_DEFAULT for auto-conversion of ZipMap outputs
+      if(OnnxRun(m_handle, ONNX_DEFAULT, featInput, labelOut, dummyProba))
+         return true;
+      
+      ResetLastError();
+      return false;
+     }
+
+   //+------------------------------------------------------------------+
+   //| Predict class and get probabilities for tree-based classifiers   |
+   //| ツリーベース分類器のクラス予測 + 確率取得                         |
+   //| Returns: predicted class index, fills proba[] with probabilities |
+   //+------------------------------------------------------------------+
+   int PredictClassProba(const float &features[], float &proba[])
+     {
+      long labels[];
+      float probaOut[];
+      
+      // --- Try 1: Full 2-output prediction (zipmap=False models)
+      if(PredictProba(features, labels, probaOut))
+        {
+         int probaSize = ArraySize(probaOut);
+         ArrayResize(proba, probaSize);
+         ArrayCopy(proba, probaOut);
+         
+         if(ArraySize(labels) > 0)
+            return (int)labels[0];
+         
+         // Fallback: argmax on probabilities
+         int maxIdx = 0;
+         float maxVal = proba[0];
+         for(int i = 1; i < probaSize; i++)
+           {
+            if(proba[i] > maxVal)
+              { maxVal = proba[i]; maxIdx = i; }
+           }
+         return maxIdx;
+        }
+      
+      // --- Try 2: Label-only (ZipMap fallback with ONNX_DEFAULT)
+      if(PredictLabelDirect(features, labels))
+        {
+         if(ArraySize(labels) > 0)
+           {
+            int cls = (int)labels[0];
+            // Generate synthetic probability array (label has no proba info)
+            ArrayResize(proba, m_numOutputs);
+            ArrayInitialize(proba, 0.0f);
+            if(cls >= 0 && cls < m_numOutputs)
+               proba[cls] = 0.70f;   // Default confidence for ZipMap mode
+            if(!m_labelDirectOk)
+              {
+               Print("ONNX INFO: PredictLabelDirect succeeded (ZipMap mode). ",
+                     "Confidence values are synthetic (0.70).");
+               m_labelDirectOk = true;
+              }
+            return cls;
+           }
+        }
+      
+      return -1;
+     }
+
+   //+------------------------------------------------------------------+
+   //| Predict and return class index (argmax)                           |
+   //| 予測してクラスインデックスを返す（argmax）                       |
+   //| Tries PredictProba → PredictLabelDirect → Predict                |
    //+------------------------------------------------------------------+
    int PredictClass(const float &features[])
      {
+      // Try 1: tree-based classifier (2 outputs, zipmap=False)
+      long labels[];
+      float probaOut[];
+      
+      if(PredictProba(features, labels, probaOut))
+        {
+         if(ArraySize(labels) > 0)
+            return (int)labels[0];
+        }
+      
+      // Try 2: label-only (ZipMap fallback)
+      if(PredictLabelDirect(features, labels))
+        {
+         if(ArraySize(labels) > 0)
+            return (int)labels[0];
+        }
+      
+      // Try 3: single-output format fallback
       float output[];
       ArrayResize(output, m_numOutputs);
       
@@ -354,7 +567,7 @@ public:
             maxVal = output[i];
         }
       
-      return maxVal;
+      return (double)maxVal;
      }
 
    //+------------------------------------------------------------------+
@@ -395,6 +608,9 @@ public:
       m_isLoaded = false;
       m_scalerLoaded = false;
       m_predCount = 0;
+      m_probaChecked = false;
+      m_probaSupported = false;
+      m_labelDirectOk = false;
       ArrayResize(m_scalerMean, 0);
       ArrayResize(m_scalerScale, 0);
      }

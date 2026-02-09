@@ -259,6 +259,9 @@ bool CSmcDrawing::DrawLabel(const string name, const int x, const int y,
      {
       ObjectSetString(0, name, OBJPROP_TEXT, text);
       ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+      ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
       return true;
      }
 
@@ -289,8 +292,11 @@ bool CSmcDrawing::DrawPanel(const string name, const int x, const int y,
   {
    if(ObjectFind(0, name) >= 0)
      {
+      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+      ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
       ObjectSetInteger(0, name, OBJPROP_XSIZE, width);
       ObjectSetInteger(0, name, OBJPROP_YSIZE, height);
+      ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bgColor);
       return true;
      }
 
