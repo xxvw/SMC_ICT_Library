@@ -1,0 +1,54 @@
+# Compiled MQL5 files
+*.ex5
+*.ex4
+
+# MetaTrader tester files
+tester/
+Tester/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# ONNX models (users should train their own)
+*.onnx
+*.pkl
+*.npy
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment variables
+.env
+.env.local
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data files (too large for git)
+*.csv
+data/
+
+# Logs
+*.log
+logs/
