@@ -28,6 +28,7 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.metrics import (
     accuracy_score,
     classification_report,
+    confusion_matrix,
     f1_score,
     mean_absolute_error,
     mean_squared_error,
@@ -146,6 +147,360 @@ _DEFAULT_RF_REG: Dict[str, Any] = {
 
 class ModelTrainer:
     """Unified training / evaluation / export interface."""
+
+    def __init__(
+        self,
+        task: str = "classification",
+        num_class: Optional[int] = None,
+        seed: int = 42,
+    ) -> None:
+        """Create an instance-compatible trainer for legacy scripts."""
+        self.task = task
+        self.num_class = num_class
+        self.seed = seed
+
+    def __getattribute__(self, name: str) -> Any:
+        """Route legacy instance calls without breaking static helpers."""
+        if name == "evaluate":
+            return object.__getattribute__(self, "_evaluate_model")
+        if name == "train_lstm":
+            return object.__getattribute__(self, "_train_lstm_model")
+        return object.__getattribute__(self, name)
+
+    @staticmethod
+    def _canonical_task(task: str) -> str:
+        if task in {"regression", "regressor"}:
+            return "regression"
+        return "classification"
+
+    def _is_multiclass(self) -> bool:
+        return self.task in {"multiclass", "multi_class"} or (
+            self.num_class is not None and self.num_class > 2
+        )
+
+    def _lgbm_defaults(self) -> Dict[str, Any]:
+        defaults = (
+            _DEFAULT_LGB_REG.copy()
+            if self._canonical_task(self.task) == "regression"
+            else _DEFAULT_LGB_CLS.copy()
+        )
+        defaults.pop("early_stopping_rounds", None)
+        if self._is_multiclass():
+            defaults.update(
+                {
+                    "objective": "multiclass",
+                    "metric": "multi_logloss",
+                    "num_class": self.num_class,
+                }
+            )
+        defaults["random_state"] = self.seed
+        return defaults
+
+    def _xgb_defaults(self) -> Dict[str, Any]:
+        defaults = (
+            _DEFAULT_XGB_REG.copy()
+            if self._canonical_task(self.task) == "regression"
+            else _DEFAULT_XGB_CLS.copy()
+        )
+        defaults.pop("early_stopping_rounds", None)
+        if self._is_multiclass():
+            defaults.update(
+                {
+                    "objective": "multi:softprob",
+                    "eval_metric": "mlogloss",
+                    "num_class": self.num_class,
+                }
+            )
+        defaults["random_state"] = self.seed
+        return defaults
+
+    def _rf_defaults(self) -> Dict[str, Any]:
+        defaults = (
+            _DEFAULT_RF_REG.copy()
+            if self._canonical_task(self.task) == "regression"
+            else _DEFAULT_RF_CLS.copy()
+        )
+        defaults["random_state"] = self.seed
+        return defaults
+
+    def optimize_lgbm(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        n_trials: int = 50,
+    ) -> Dict[str, Any]:
+        """Return LightGBM parameters compatible with legacy scripts."""
+        _ = (X_train, y_train, n_trials)
+        return self._lgbm_defaults()
+
+    def optimize_xgb(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        n_trials: int = 50,
+    ) -> Dict[str, Any]:
+        """Return XGBoost parameters compatible with legacy scripts."""
+        _ = (X_train, y_train, n_trials)
+        return self._xgb_defaults()
+
+    def optimize_rf(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        n_trials: int = 50,
+    ) -> Dict[str, Any]:
+        """Return RandomForest parameters compatible with legacy scripts."""
+        _ = (X_train, y_train, n_trials)
+        return self._rf_defaults()
+
+    def train_lgbm(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Train LightGBM with the legacy instance API."""
+        if not _LGB_AVAILABLE:
+            raise ImportError("lightgbm is not installed.")
+
+        defaults = self._lgbm_defaults()
+        if params:
+            defaults.update(params)
+        n_estimators = defaults.pop("n_estimators", 500)
+
+        if self._canonical_task(self.task) == "regression":
+            model = lgb.LGBMRegressor(n_estimators=n_estimators, **defaults)
+        else:
+            model = lgb.LGBMClassifier(n_estimators=n_estimators, **defaults)
+        model.fit(X_train, y_train)
+        return model
+
+    def train_xgb(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Train XGBoost with the legacy instance API."""
+        if not _XGB_AVAILABLE:
+            raise ImportError("xgboost is not installed.")
+
+        defaults = self._xgb_defaults()
+        if params:
+            defaults.update(params)
+
+        if self._canonical_task(self.task) == "regression":
+            model = xgb.XGBRegressor(**defaults)
+        else:
+            model = xgb.XGBClassifier(**defaults)
+        model.fit(X_train, y_train)
+        return model
+
+    def train_rf(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Train RandomForest with the legacy instance API."""
+        defaults = self._rf_defaults()
+        if params:
+            defaults.update(params)
+
+        if self._canonical_task(self.task) == "regression":
+            model = RandomForestRegressor(**defaults)
+        else:
+            model = RandomForestClassifier(**defaults)
+        model.fit(X_train, y_train)
+        return model
+
+    def evaluate_regression(
+        self,
+        model: Any,
+        X_test: np.ndarray,
+        y_test: np.ndarray,
+    ) -> Dict[str, Any]:
+        """Evaluate a regression model with the legacy instance API."""
+        y_pred = model.predict(X_test)
+        return ModelTrainer.evaluate(y_test, y_pred, task="regression")
+
+    def _evaluate_model(
+        self,
+        model: Any,
+        X_test: np.ndarray,
+        y_test: np.ndarray,
+        label_names: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Evaluate a fitted model with the legacy instance API."""
+        y_pred = model.predict(X_test)
+        y_prob = None
+        if hasattr(model, "predict_proba"):
+            try:
+                probabilities = model.predict_proba(X_test)
+                y_prob = (
+                    probabilities[:, 1]
+                    if np.ndim(probabilities) == 2
+                    and probabilities.shape[1] == 2
+                    else probabilities
+                )
+            except Exception as exc:
+                logger.debug("predict_proba failed: %s", exc)
+        return ModelTrainer.evaluate(
+            y_test,
+            y_pred,
+            y_prob,
+            task=self._canonical_task(self.task),
+            label_names=label_names,
+        )
+
+    def evaluate_lstm(
+        self,
+        model: Any,
+        X_test: np.ndarray,
+        y_test: np.ndarray,
+        label_names: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Evaluate a Keras classifier with the legacy instance API."""
+        y_prob = model.predict(X_test, verbose=0)
+        y_pred = np.argmax(y_prob, axis=1)
+        return ModelTrainer.evaluate(
+            y_test,
+            y_pred,
+            y_prob,
+            task="classification",
+            label_names=label_names,
+        )
+
+    def feature_importance(
+        self,
+        model: Any,
+        feature_cols: List[str],
+        top_n: int = 10,
+    ) -> List[Tuple[str, float]]:
+        """Return sorted feature importances for common model types."""
+        if hasattr(model, "feature_importances_"):
+            values = np.asarray(model.feature_importances_, dtype=float)
+        elif hasattr(model, "coef_"):
+            values = np.abs(np.asarray(model.coef_, dtype=float)).ravel()
+        else:
+            return []
+
+        items = list(zip(feature_cols, values))
+        items.sort(key=lambda item: item[1], reverse=True)
+        return [(name, float(value)) for name, value in items[:top_n]]
+
+    def export_onnx(
+        self,
+        model: Any,
+        feature_cols: List[str],
+        output_path: Union[str, Path],
+    ) -> Path:
+        """Export a model with the legacy instance API."""
+        path = Path(output_path)
+        if path.suffix.lower() != ".onnx":
+            path = path / f"{path.name}.onnx"
+
+        module = model.__class__.__module__.lower()
+        name = model.__class__.__name__.lower()
+        if "lightgbm" in module or "lgbm" in name:
+            model_type = "lightgbm"
+        elif "xgboost" in module or "xgb" in name:
+            model_type = "xgboost"
+        else:
+            model_type = "random_forest"
+
+        return self.export_to_onnx(model, model_type, len(feature_cols), path)
+
+    def export_lstm_onnx(
+        self,
+        model: Any,
+        seq_length: int,
+        n_features: int,
+        output_path: Union[str, Path],
+    ) -> Path:
+        """Export an LSTM model with the legacy instance API."""
+        path = Path(output_path)
+        if path.suffix.lower() != ".onnx":
+            path = path / f"{path.name}.onnx"
+        return self.export_to_onnx(
+            model,
+            "lstm",
+            n_features,
+            path,
+            seq_length=seq_length,
+        )
+
+    def build_lstm(
+        self,
+        input_shape: Tuple[int, int],
+        units: int = 64,
+        dropout: float = 0.3,
+        lr: float = 1e-3,
+    ) -> Any:
+        """Build a Keras LSTM classifier with the legacy instance API."""
+        if not _TF_AVAILABLE:
+            raise ImportError("tensorflow is not installed.")
+
+        from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
+        from tensorflow.keras.models import Sequential
+
+        n_classes = self.num_class or 2
+        model = Sequential(
+            [
+                Input(shape=input_shape),
+                LSTM(units, return_sequences=True),
+                Dropout(dropout),
+                LSTM(max(1, units // 2), return_sequences=False),
+                Dropout(dropout),
+                Dense(16, activation="relu"),
+                Dense(n_classes, activation="softmax"),
+            ]
+        )
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=lr),
+            loss="categorical_crossentropy",
+            metrics=["accuracy"],
+        )
+        return model
+
+    def _train_lstm_model(
+        self,
+        model: Any,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
+        epochs: int = 50,
+        batch_size: int = 64,
+    ) -> Any:
+        """Train a provided Keras model with the legacy instance API."""
+        if not _TF_AVAILABLE:
+            raise ImportError("tensorflow is not installed.")
+
+        from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+        from tensorflow.keras.utils import to_categorical
+
+        n_classes = self.num_class or int(max(np.max(y_train), np.max(y_val))) + 1
+        y_train_cat = to_categorical(y_train, num_classes=n_classes)
+        y_val_cat = to_categorical(y_val, num_classes=n_classes)
+
+        callbacks = [
+            EarlyStopping(
+                monitor="val_loss", patience=10, restore_best_weights=True
+            ),
+            ReduceLROnPlateau(
+                monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6
+            ),
+        ]
+        return model.fit(
+            X_train,
+            y_train_cat,
+            validation_data=(X_val, y_val_cat),
+            epochs=epochs,
+            batch_size=batch_size,
+            callbacks=callbacks,
+            verbose=1,
+        )
 
     # ================================================================
     # LightGBM
@@ -596,7 +951,8 @@ class ModelTrainer:
         y_pred: np.ndarray,
         y_prob: Optional[np.ndarray] = None,
         task: str = "classification",
-    ) -> Dict[str, float]:
+        label_names: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         """Compute a standard set of evaluation metrics.
 
         Parameters
@@ -619,19 +975,65 @@ class ModelTrainer:
         y_pred = np.asarray(y_pred)
 
         if task == "classification":
-            metrics: Dict[str, float] = {
+            labels = np.unique(np.concatenate([y_true, y_pred]))
+            average = "binary" if len(labels) <= 2 else "macro"
+            metrics: Dict[str, Any] = {
                 "accuracy": float(accuracy_score(y_true, y_pred)),
                 "precision": float(
-                    precision_score(y_true, y_pred, zero_division=0)
+                    precision_score(
+                        y_true,
+                        y_pred,
+                        average=average,
+                        zero_division=0,
+                    )
                 ),
                 "recall": float(
-                    recall_score(y_true, y_pred, zero_division=0)
+                    recall_score(
+                        y_true,
+                        y_pred,
+                        average=average,
+                        zero_division=0,
+                    )
                 ),
-                "f1": float(f1_score(y_true, y_pred, zero_division=0)),
+                "f1": float(
+                    f1_score(
+                        y_true,
+                        y_pred,
+                        average=average,
+                        zero_division=0,
+                    )
+                ),
+                "f1_macro": float(
+                    f1_score(
+                        y_true,
+                        y_pred,
+                        average="macro",
+                        zero_division=0,
+                    )
+                ),
+                "confusion_matrix": confusion_matrix(y_true, y_pred),
             }
+            try:
+                metrics["classification_report"] = classification_report(
+                    y_true,
+                    y_pred,
+                    target_names=label_names,
+                    zero_division=0,
+                )
+            except ValueError:
+                metrics["classification_report"] = classification_report(
+                    y_true,
+                    y_pred,
+                    zero_division=0,
+                )
             if y_prob is not None:
                 try:
-                    metrics["auc_roc"] = float(roc_auc_score(y_true, y_prob))
+                    roc_kwargs = {}
+                    if np.ndim(y_prob) == 2 and y_prob.shape[1] > 2:
+                        roc_kwargs = {"multi_class": "ovr", "average": "macro"}
+                    metrics["auc_roc"] = float(
+                        roc_auc_score(y_true, y_prob, **roc_kwargs)
+                    )
                 except ValueError:
                     metrics["auc_roc"] = 0.0
             return metrics

@@ -108,6 +108,44 @@ class DataLoader:
     >>> train, val, test = loader.train_val_test_split(df)
     """
 
+    def __init__(
+        self,
+        symbol: Optional[str] = None,
+        timeframe: Optional[Union[str, int]] = None,
+        csv_path: Optional[Union[str, Path]] = None,
+    ) -> None:
+        """Create a loader with defaults used by the training scripts."""
+        self.symbol = symbol
+        self.timeframe = timeframe
+        self.csv_path = Path(csv_path) if csv_path is not None else None
+
+    def load(
+        self,
+        n_bars: int,
+        start_date: Optional[datetime] = None,
+        csv_path: Optional[Union[str, Path]] = None,
+    ) -> pd.DataFrame:
+        """Load data using the instance defaults.
+
+        This keeps compatibility with training scripts that instantiate
+        ``DataLoader(symbol, timeframe)`` and then call ``load(n_bars)``.
+        """
+        path = Path(csv_path) if csv_path is not None else self.csv_path
+        if path is not None:
+            return self.load_from_csv(path)
+
+        if self.symbol is None or self.timeframe is None:
+            raise ValueError(
+                "symbol and timeframe are required when csv_path is not set"
+            )
+
+        return self.load_from_mt5(
+            self.symbol,
+            self.timeframe,
+            n_bars,
+            start_date=start_date,
+        )
+
     # ------------------------------------------------------------------
     # MT5 loading
     # ------------------------------------------------------------------
