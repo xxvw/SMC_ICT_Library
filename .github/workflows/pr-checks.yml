@@ -26,14 +26,8 @@ jobs:
       - name: Install Python check dependencies
         run: python -m pip install --upgrade numpy pandas scikit-learn ruff
 
-      - name: Check Python syntax
-        run: python -m compileall -q Python
-
-      - name: Run focused Python lint
-        run: python -m ruff check Python --select E9,F63,F7,F82 --output-format=github
-
-      - name: Run lightweight Python tests
-        run: python -m unittest discover -s Python/tests
+      - name: Run Python checks
+        run: python tools/check_python.py
 
   mql5:
     name: MQL5 static checks
