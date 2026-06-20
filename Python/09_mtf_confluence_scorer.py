@@ -15,6 +15,7 @@ import pandas as pd
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common.paths import default_model_dir
 
 try:
     from common.data_loader import DataLoader
@@ -31,7 +32,7 @@ CONFIG = {
     'base_timeframe': 'M5',
     'n_bars': 100000,
     'model_name': 'mtf_confluence_scorer',
-    'output_dir': '../Files/models/',
+    'output_dir': str(default_model_dir()),
     'test_size': 0.2,
     'random_state': 42,
     'xgb_params': {

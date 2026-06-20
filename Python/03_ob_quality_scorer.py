@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common.data_loader import DataLoader
 from common.feature_base import FeatureEngineer
 from common.model_utils import ModelTrainer
+from common.paths import default_model_dir
 
 warnings.filterwarnings("ignore")
 
@@ -30,7 +31,7 @@ CONFIG = {
     "timeframe": "M5",
     "n_bars": 100_000,
     "model_name": "ob_quality_scorer",
-    "output_dir": "../Files/models/",
+    "output_dir": str(default_model_dir()),
     # OB detection
     "impulse_min_pips": 10.0,
     "ob_max_age": 100,           # max bars since OB formed to be revisited

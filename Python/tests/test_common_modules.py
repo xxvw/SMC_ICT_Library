@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common.data_loader import DataLoader
 from common.feature_base import FeatureEngineer
 from common.model_utils import ModelTrainer
+from common.paths import default_model_dir, resolve_output_dir
 
 
 def sample_ohlc() -> pd.DataFrame:
@@ -41,6 +42,20 @@ class DataLoaderTests(unittest.TestCase):
     def test_load_requires_source(self) -> None:
         with self.assertRaises(ValueError):
             DataLoader().load(10)
+
+
+class PathHelperTests(unittest.TestCase):
+    def test_default_model_dir_is_repo_level_files_dir(self) -> None:
+        path = default_model_dir()
+
+        self.assertEqual(path.name, "models")
+        self.assertEqual(path.parent.name, "Files")
+
+    def test_resolve_output_dir_is_cwd_independent(self) -> None:
+        self.assertEqual(
+            resolve_output_dir("../Files/models"),
+            default_model_dir().resolve(),
+        )
 
 
 class FeatureEngineerTests(unittest.TestCase):
