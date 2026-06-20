@@ -73,20 +73,21 @@ seaborn>=0.12.0
 
 | メソッド | 説明 |
 |---|---|
-| `load_from_mt5(symbol, timeframe, bars)` | MT5 Python APIからリアルタイムデータ取得 |
+| `load_from_mt5(symbol, timeframe, bars)` | MT5 Python APIからデータ取得 |
 | `load_from_csv(filepath)` | CSVファイルからデータ読み込み |
-| `load_multi(symbols, timeframe, bars)` | 複数シンボル一括取得 |
-| `split_time_series(df, train, val, test)` | 時系列を考慮したデータ分割（look-ahead bias防止） |
-| `create_sequences(data, seq_length)` | LSTM用のシーケンスデータ作成 |
+| `DataLoader(symbol, timeframe).load(bars)` | 学習スクリプト互換のインスタンスロード |
+| `load_multi_symbol(symbols, timeframe, bars)` | 複数シンボル一括取得 |
+| `train_val_test_split(df, train_ratio, val_ratio)` | 時系列を考慮したデータ分割（look-ahead bias防止） |
+| `create_sequences(data, seq_length, target_col)` | LSTM用のシーケンスデータ作成 |
 
 **使用例:**
 
 ```python
 from common import DataLoader
 
-loader = DataLoader()
-df = loader.load_from_mt5("EURUSD", "H1", 50000)
-train, val, test = loader.split_time_series(df, 0.7, 0.15, 0.15)
+loader = DataLoader("EURUSD", "H1")
+df = loader.load(50000)
+train, val, test = loader.train_val_test_split(df, 0.7, 0.15)
 ```
 
 ### `common/feature_base.py` - FeatureEngineer
@@ -111,13 +112,13 @@ train, val, test = loader.split_time_series(df, 0.7, 0.15, 0.15)
 from common import FeatureEngineer
 
 fe = FeatureEngineer()
-df = fe.add_return_features(df)
-df = fe.add_volatility_features(df)
-df = fe.add_candle_features(df)
-df = fe.add_momentum_features(df)
+df = fe.add_returns(df)
+df = fe.add_volatility(df)
+df = fe.add_candlestick_features(df)
+df = fe.add_momentum(df)
 df = fe.add_time_features(df)
 df = fe.add_smc_features(df)
-df = fe.select_features(df, target_col='label', max_features=50)
+df = fe.select_features(df, target='label')
 ```
 
 ### `common/model_utils.py` - ModelTrainer
@@ -138,12 +139,13 @@ df = fe.select_features(df, target_col='label', max_features=50)
 
 | メソッド | 説明 |
 |---|---|
-| `train(model_type, X, y, params)` | モデル学習 |
-| `optimize(model_type, X, y, n_trials)` | Optunaによるハイパーパラメータ最適化 |
+| `train_lightgbm/train_xgboost/train_random_forest(...)` | 検証データ付きモデル学習 |
+| `train_lgbm/train_xgb/train_rf(...)` | 学習スクリプト互換のモデル学習 |
+| `optimize_hyperparams(...)` | Optunaによるハイパーパラメータ最適化 |
 | `evaluate(model, X, y)` | 評価（Accuracy, F1, Precision, Recall, ROC-AUC） |
-| `export_onnx(model, model_type, path, input_shape)` | ONNX形式でエクスポート |
-| `save_scaler(scaler, path)` | スケーラーパラメータ保存 |
-| `load_scaler(path)` | スケーラーパラメータ読み込み |
+| `export_to_onnx(...)` / `export_onnx(...)` | ONNX形式でエクスポート |
+| `save_scaler(scaler, output_dir, model_name)` | スケーラーパラメータ保存 |
+| `load_scaler(output_dir, model_name)` | スケーラーパラメータ読み込み |
 
 ---
 
@@ -197,9 +199,20 @@ cd Python/
 python 01_trend_classifier.py
 
 # 出力される生成物:
-#   models/trend_classifier.onnx       ← ONNXモデル
-#   models/trend_classifier_mean.npy   ← スケーラー平均値
-#   models/trend_classifier_scale.npy  ← スケーラースケール値
+#   ../Files/models/...       ← ONNXモデル / スケーラー / 補助ファイル
+```
+
+出力先は `common.paths.default_model_dir()` で解決されるため、スクリプトをどのディレクトリから実行してもリポジトリ配下の `Files/models/` に保存されます。
+
+### 軽量検証
+
+学習処理やMT5接続を行わず、共通モジュールの構文・lint・単体テストだけを確認できます。
+
+```bash
+cd ..
+pip install numpy pandas scikit-learn ruff
+python tools/check_python.py
+python tools/check_mql5_static.py
 ```
 
 ### 全モデルの一括学習
@@ -344,7 +357,7 @@ void OnStart()
 """
 import sys
 sys.path.append('.')
-from common import DataLoader, FeatureEngineer, ModelTrainer
+from common import DataLoader, FeatureEngineer, ModelTrainer, default_model_dir
 
 # 設定
 CONFIG = {
@@ -360,8 +373,8 @@ CONFIG = {
 def create_features(df):
     """カスタム特徴量を作成"""
     fe = FeatureEngineer()
-    df = fe.add_return_features(df)
-    df = fe.add_volatility_features(df)
+    df = fe.add_returns(df)
+    df = fe.add_volatility(df)
     # ... 必要な特徴量を追加 ...
     return df
 
@@ -376,8 +389,8 @@ def create_labels(df):
 
 def main():
     # データ取得
-    loader = DataLoader()
-    df = loader.load_from_mt5(CONFIG['symbol'], CONFIG['timeframe'], CONFIG['bars'])
+    loader = DataLoader(CONFIG['symbol'], CONFIG['timeframe'])
+    df = loader.load(CONFIG['bars'])
 
     # 特徴量・ラベル作成
     df = create_features(df)
@@ -385,34 +398,27 @@ def main():
     df = df.dropna()
 
     # 分割
-    train, val, test = loader.split_time_series(df, 0.7, 0.15, 0.15)
+    train, val, test = loader.train_val_test_split(df, 0.7, 0.15)
 
     # 学習
-    trainer = ModelTrainer()
+    trainer = ModelTrainer(task='multiclass', num_class=3)
     feature_cols = [c for c in df.columns if c not in ['label', 'future_return', 'time']]
 
     if CONFIG['optimize']:
-        best_params = trainer.optimize(CONFIG['model_type'],
-                                       train[feature_cols], train['label'],
-                                       CONFIG['n_trials'])
-        model = trainer.train(CONFIG['model_type'],
-                              train[feature_cols], train['label'],
-                              best_params)
+        best_params = trainer.optimize_lgbm(
+            train[feature_cols], train['label'], CONFIG['n_trials'])
+        model = trainer.train_lgbm(
+            train[feature_cols], train['label'], best_params)
     else:
-        model = trainer.train(CONFIG['model_type'],
-                              train[feature_cols], train['label'])
+        model = trainer.train_lgbm(train[feature_cols], train['label'])
 
     # 評価
     metrics = trainer.evaluate(model, test[feature_cols], test['label'])
     print(f"Test Metrics: {metrics}")
 
     # ONNXエクスポート
-    trainer.export_onnx(model, CONFIG['model_type'],
-                        f"models/{CONFIG['name']}.onnx",
-                        len(feature_cols))
-
-    # スケーラー保存
-    trainer.save_scaler(trainer.scaler, f"models/{CONFIG['name']}")
+    output_path = default_model_dir() / CONFIG['name']
+    trainer.export_onnx(model, feature_cols, output_path)
 
 if __name__ == '__main__':
     main()
