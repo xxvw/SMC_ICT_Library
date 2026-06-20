@@ -28,6 +28,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from common.paths import default_model_dir
+
 warnings.filterwarnings("ignore")
 
 # ---------------------------------------------------------------------------
@@ -38,7 +41,7 @@ CONFIG = {
                 "GBPJPY", "USDCHF", "USDCAD", "NZDUSD"],
     "timeframe_d1": "D1",
     "model_name": "market_regime",
-    "output_dir": "../Files/models/",
+    "output_dir": str(default_model_dir()),
     # Data period
     "date_from": datetime(2023, 1, 5),
     "date_to":   datetime(2025, 12, 25),

@@ -11,9 +11,20 @@ Modules:
     model_utils   - Model training, hyperparameter optimization, ONNX export
 """
 
-from common.data_loader import DataLoader
-from common.feature_base import FeatureEngineer
-from common.model_utils import ModelTrainer
+from common.paths import default_model_dir, resolve_output_dir
 
-__all__ = ["DataLoader", "FeatureEngineer", "ModelTrainer"]
+try:
+    from common.data_loader import DataLoader
+    from common.feature_base import FeatureEngineer
+    from common.model_utils import ModelTrainer
+except ImportError:
+    DataLoader = FeatureEngineer = ModelTrainer = None
+
+__all__ = [
+    "DataLoader",
+    "FeatureEngineer",
+    "ModelTrainer",
+    "default_model_dir",
+    "resolve_output_dir",
+]
 __version__ = "1.0.0"

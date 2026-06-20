@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common.data_loader import DataLoader
 from common.feature_base import FeatureEngineer
 from common.model_utils import ModelTrainer
+from common.paths import default_model_dir
 
 warnings.filterwarnings("ignore")
 
@@ -31,7 +32,7 @@ CONFIG = {
     "timeframe": "M5",
     "n_bars": 100_000,
     "model_name": "bos_choch_detector",
-    "output_dir": "../Files/models/",
+    "output_dir": str(default_model_dir()),
     # Sequence parameters
     "seq_length": 30,         # lookback bars for LSTM input
     "future_bars": 10,        # look-ahead for labelling

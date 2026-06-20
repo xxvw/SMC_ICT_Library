@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common.paths import default_model_dir
 
 try:
     from common.data_loader import DataLoader
@@ -30,7 +31,7 @@ CONFIG = {
     'timeframe': 'M5',
     'n_bars': 100000,
     'model_name': 'price_action_classifier',
-    'output_dir': '../Files/models/',
+    'output_dir': str(default_model_dir()),
     'sequence_length': 20,
     'test_size': 0.2,
     'random_state': 42,

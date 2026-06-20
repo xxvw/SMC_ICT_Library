@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common.data_loader import DataLoader
 from common.feature_base import FeatureEngineer
 from common.model_utils import ModelTrainer
+from common.paths import default_model_dir
 
 warnings.filterwarnings("ignore")
 
@@ -30,7 +31,7 @@ CONFIG = {
     "timeframe": "M5",
     "n_bars": 100_000,
     "model_name": "liquidity_sweep_pred",
-    "output_dir": "../Files/models/",
+    "output_dir": str(default_model_dir()),
     # Liquidity detection
     "equal_tolerance_pips": 2.0,  # pips tolerance for "equal" levels
     "lookback": 50,               # bars to look back for equal levels
