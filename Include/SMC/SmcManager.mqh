@@ -56,6 +56,8 @@ private:
    bool              m_enableCS;
    bool              m_enableVIX;
 
+   void              ReleaseModules();
+
 public:
                      CSmcManager();
                     ~CSmcManager();
@@ -116,6 +118,12 @@ CSmcManager::CSmcManager()
 //+------------------------------------------------------------------+
 CSmcManager::~CSmcManager()
   {
+   ReleaseModules();
+  }
+
+//+------------------------------------------------------------------+
+void CSmcManager::ReleaseModules()
+  {
    Clean();
 
    if(m_confluence != NULL) { delete m_confluence; m_confluence = NULL; }
@@ -126,10 +134,12 @@ CSmcManager::~CSmcManager()
    if(m_liquidity != NULL)  { delete m_liquidity;  m_liquidity = NULL; }
    if(m_fvg != NULL)        { delete m_fvg;        m_fvg = NULL; }
    if(m_ob != NULL)         { delete m_ob;         m_ob = NULL; }
-   if(m_structure != NULL)  { delete m_structure;   m_structure = NULL; }
-   if(m_swing != NULL)      { delete m_swing;       m_swing = NULL; }
-   if(m_cs != NULL)         { delete m_cs;          m_cs = NULL; }
-   if(m_vix != NULL)        { delete m_vix;         m_vix = NULL; }
+   if(m_structure != NULL)  { delete m_structure;  m_structure = NULL; }
+   if(m_swing != NULL)      { delete m_swing;      m_swing = NULL; }
+   if(m_cs != NULL)         { delete m_cs;         m_cs = NULL; }
+   if(m_vix != NULL)        { delete m_vix;        m_vix = NULL; }
+
+   m_initialized = false;
   }
 
 //+------------------------------------------------------------------+
@@ -137,6 +147,8 @@ bool CSmcManager::Init(const string symbol, const ENUM_TIMEFRAMES timeframe,
                        const bool enableDraw, const bool enableCS,
                        const bool enableVIX)
   {
+   ReleaseModules();
+
    m_symbol     = (symbol == "" || symbol == "0") ? _Symbol : symbol;
    m_timeframe  = (timeframe == PERIOD_CURRENT) ? (ENUM_TIMEFRAMES)Period() : timeframe;
    m_enableDraw = enableDraw;
@@ -146,52 +158,82 @@ bool CSmcManager::Init(const string symbol, const ENUM_TIMEFRAMES timeframe,
 //--- 1. SwingPoints (基盤 - 全モジュールが共有)
    m_swing = new CSmcSwingPoints();
    if(!m_swing.Init(m_symbol, m_timeframe, enableDraw))
+     {
+      ReleaseModules();
       return false;
+     }
 
 //--- 2. MarketStructure (SwingPointsを共有)
    m_structure = new CSmcMarketStructure();
    if(!m_structure.Init(m_symbol, m_timeframe, enableDraw, m_swing))
+     {
+      ReleaseModules();
       return false;
+     }
 
 //--- 3. OrderBlock (MarketStructureを共有)
    m_ob = new CSmcOrderBlock();
    if(!m_ob.Init(m_symbol, m_timeframe, enableDraw, m_structure))
+     {
+      ReleaseModules();
       return false;
+     }
 
 //--- 4. FairValueGap (独立)
    m_fvg = new CSmcFairValueGap();
    if(!m_fvg.Init(m_symbol, m_timeframe, enableDraw))
+     {
+      ReleaseModules();
       return false;
+     }
 
 //--- 5. Liquidity (SwingPointsを共有)
    m_liquidity = new CSmcLiquidity();
    if(!m_liquidity.Init(m_symbol, m_timeframe, enableDraw, m_swing))
+     {
+      ReleaseModules();
       return false;
+     }
 
 //--- 6. PremiumDiscount (SwingPointsを共有)
    m_pd = new CSmcPremiumDiscount();
    if(!m_pd.Init(m_symbol, m_timeframe, enableDraw, m_swing))
+     {
+      ReleaseModules();
       return false;
+     }
 
 //--- 7. OptimalTradeEntry (SwingPointsを共有)
    m_ote = new CSmcOptimalTradeEntry();
    if(!m_ote.Init(m_symbol, m_timeframe, enableDraw, m_swing))
+     {
+      ReleaseModules();
       return false;
+     }
 
 //--- 8. KillZone (独立)
    m_kz = new CSmcKillZone();
    if(!m_kz.Init(m_symbol, m_timeframe, enableDraw))
+     {
+      ReleaseModules();
       return false;
+     }
 
 //--- 9. BreakerBlock (OrderBlock/MarketStructureを共有)
    m_breaker = new CSmcBreakerBlock();
    if(!m_breaker.Init(m_symbol, m_timeframe, enableDraw, m_ob, m_structure))
+     {
+      ReleaseModules();
       return false;
+     }
 
 //--- 10. Confluence (全モジュール参照)
    m_confluence = new CSmcConfluence();
    if(!m_confluence.Init(m_symbol, m_timeframe, enableDraw))
+     {
+      ReleaseModules();
       return false;
+     }
    m_confluence.SetStructure(m_structure);
    m_confluence.SetOrderBlock(m_ob);
    m_confluence.SetFVG(m_fvg);
@@ -204,14 +246,22 @@ bool CSmcManager::Init(const string symbol, const ENUM_TIMEFRAMES timeframe,
    if(m_enableCS)
      {
       m_cs = new CSmcCurrencyStrength();
-      m_cs.Init(m_symbol, m_timeframe, false);
+      if(!m_cs.Init(m_symbol, m_timeframe, false))
+        {
+         ReleaseModules();
+         return false;
+        }
      }
 
 //--- 12. VIXCalculator (オプション)
    if(m_enableVIX)
      {
       m_vix = new CSmcVIXCalculator();
-      m_vix.Init(m_symbol, m_timeframe, false);
+      if(!m_vix.Init(m_symbol, m_timeframe, false))
+        {
+         ReleaseModules();
+         return false;
+        }
      }
 
    m_initialized = true;
