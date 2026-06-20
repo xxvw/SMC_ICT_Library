@@ -42,6 +42,117 @@ class FeatureEngineer:
     efficiency) and also returns it so calls can be chained.
     """
 
+    def __init__(self, df: Optional[pd.DataFrame] = None) -> None:
+        """Bind a DataFrame for compatibility with legacy scripts."""
+        self.df = df
+
+    def _require_df(self) -> pd.DataFrame:
+        if self.df is None:
+            raise ValueError("A DataFrame is required for this operation")
+        return self.df
+
+    def atr(self, period: int = 14) -> pd.Series:
+        """Return Average True Range for the bound DataFrame."""
+        df = self._require_df()
+        high, low, close = df["high"], df["low"], df["close"]
+        previous_close = close.shift(1)
+        true_range = pd.concat(
+            [
+                high - low,
+                (high - previous_close).abs(),
+                (low - previous_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        return true_range.rolling(period, min_periods=1).mean()
+
+    def distance_to_swing(self, side: str, lookback: int = 20) -> pd.Series:
+        """Distance from close to recent swing high or low."""
+        df = self._require_df()
+        side = side.lower()
+        if side == "high":
+            swing = df["high"].rolling(lookback, min_periods=1).max()
+            return swing - df["close"]
+        if side == "low":
+            swing = df["low"].rolling(lookback, min_periods=1).min()
+            return df["close"] - swing
+        raise ValueError("side must be 'high' or 'low'")
+
+    def consecutive_higher(self, column: str, window: int = 5) -> pd.Series:
+        """Count consecutive increases for a column over a rolling window."""
+        df = self._require_df()
+        return (
+            (df[column].diff() > 0)
+            .astype(int)
+            .rolling(window, min_periods=1)
+            .sum()
+        )
+
+    def consecutive_lower(self, column: str, window: int = 5) -> pd.Series:
+        """Count consecutive decreases for a column over a rolling window."""
+        df = self._require_df()
+        return (
+            (df[column].diff() < 0)
+            .astype(int)
+            .rolling(window, min_periods=1)
+            .sum()
+        )
+
+    def percentile_rank(
+        self,
+        series: pd.Series,
+        index: int,
+        lookback: int = 100,
+    ) -> float:
+        """Return the percentile rank of ``series[index]`` in a lookback."""
+        if index < 0 or index >= len(series):
+            return 0.0
+        start = max(0, index - lookback + 1)
+        window = series.iloc[start : index + 1].dropna()
+        if window.empty:
+            return 0.0
+        return float((window <= series.iloc[index]).mean())
+
+    def bars_since_level_touch(
+        self,
+        index: int,
+        level: float,
+        lookback: int = 100,
+    ) -> int:
+        """Return bars elapsed since high/low last touched a price level."""
+        df = self._require_df()
+        start = max(0, index - lookback)
+        for offset, i in enumerate(range(index, start - 1, -1)):
+            if df["low"].iloc[i] <= level <= df["high"].iloc[i]:
+                return offset
+        return lookback
+
+    def count_structure_breaks(self, index: int, lookback: int = 50) -> int:
+        """Count simple high/low break events in a lookback window."""
+        df = self._require_df()
+        start = max(1, index - lookback + 1)
+        count = 0
+        for i in range(start, index + 1):
+            prev_high = df["high"].iloc[start - 1 : i].max()
+            prev_low = df["low"].iloc[start - 1 : i].min()
+            if df["close"].iloc[i] > prev_high or df["close"].iloc[i] < prev_low:
+                count += 1
+        return count
+
+    def consecutive_direction(self, index: int, direction: str) -> int:
+        """Count consecutive candles in ``direction`` ending at ``index``."""
+        df = self._require_df()
+        want_bullish = direction.lower() in {"bull", "bullish", "buy", "up"}
+        count = 0
+        for i in range(index, -1, -1):
+            bullish = df["close"].iloc[i] > df["open"].iloc[i]
+            bearish = df["close"].iloc[i] < df["open"].iloc[i]
+            if (want_bullish and bullish) or (not want_bullish and bearish):
+                count += 1
+            else:
+                break
+        return count
+
     # ------------------------------------------------------------------
     # Returns
     # ------------------------------------------------------------------
