@@ -97,6 +97,14 @@ source venv/bin/activate      # Linux/Mac
 pip install -r requirements.txt
 ```
 
+軽量な構文チェック・lint・単体テストだけを確認する場合は、リポジトリルートで以下を実行します。
+
+```bash
+pip install numpy pandas scikit-learn ruff
+python tools/check_python.py
+python tools/check_mql5_static.py
+```
+
 ### 主な依存パッケージ
 
 | パッケージ | 用途 |

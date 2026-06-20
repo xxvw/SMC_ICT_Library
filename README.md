@@ -89,6 +89,14 @@ cd Python/
 pip install -r requirements.txt
 ```
 
+軽量なローカル検証だけを実行する場合は、リポジトリルートで以下を実行します。
+
+```bash
+pip install numpy pandas scikit-learn ruff
+python tools/check_python.py
+python tools/check_mql5_static.py
+```
+
 ---
 
 ## Quick Start / クイックスタート
@@ -163,6 +171,7 @@ void OnDeinit(const int reason)
 ### ML Model Training
 
 ```bash
+# リポジトリルート、または Python/ 配下から実行できます。
 cd Python/
 
 # 1. トレンド分類モデルの学習
@@ -171,6 +180,8 @@ python 01_trend_classifier.py
 # 2. アンサンブルモデルの学習 (全モデルの統合)
 python 15_smc_ensemble.py
 ```
+
+学習スクリプトの出力先は実行ディレクトリに依存せず、リポジトリ配下の `Files/models/` に解決されます。
 
 ---
 
