@@ -278,21 +278,25 @@ bool CSmcManager::Update()
       return false;
 
 //--- 更新順序: 依存関係の上流から下流へ
-   m_swing.Update();          // 1. SwingPoints (基盤)
-   m_structure.Update();      // 2. MarketStructure (SwingPoints依存)
-   m_ob.Update();             // 3. OrderBlock (MarketStructure依存)
-   m_fvg.Update();            // 4. FVG (独立)
-   m_liquidity.Update();      // 5. Liquidity (SwingPoints依存)
-   m_pd.Update();             // 6. PremiumDiscount (SwingPoints依存)
-   m_ote.Update();            // 7. OTE (SwingPoints依存)
-   m_kz.Update();             // 8. KillZone (独立)
-   m_breaker.Update();        // 9. BreakerBlock (OB+Structure依存)
-   m_confluence.Update();     // 10. Confluence (全モジュール依存)
+   if(m_swing == NULL || !m_swing.Update())           return false; // 1. SwingPoints
+   if(m_structure == NULL || !m_structure.Update())   return false; // 2. MarketStructure
+   if(m_ob == NULL || !m_ob.Update())                 return false; // 3. OrderBlock
+   if(m_fvg == NULL || !m_fvg.Update())               return false; // 4. FVG
+   if(m_liquidity == NULL || !m_liquidity.Update())   return false; // 5. Liquidity
+   if(m_pd == NULL || !m_pd.Update())                 return false; // 6. PremiumDiscount
+   if(m_ote == NULL || !m_ote.Update())               return false; // 7. OTE
+   if(m_kz == NULL || !m_kz.Update())                 return false; // 8. KillZone
+   if(m_breaker == NULL || !m_breaker.Update())       return false; // 9. BreakerBlock
+   if(m_confluence == NULL || !m_confluence.Update()) return false; // 10. Confluence
 
    if(m_cs != NULL)
-      m_cs.Update();          // 11. CurrencyStrength
+     {
+      if(!m_cs.Update())       return false; // 11. CurrencyStrength
+     }
    if(m_vix != NULL)
-      m_vix.Update();         // 12. VIX
+     {
+      if(!m_vix.Update())      return false; // 12. VIX
+     }
 
    return true;
   }
