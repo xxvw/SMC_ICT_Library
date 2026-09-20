@@ -41,6 +41,7 @@ test("shared fixture validates and output filters and sorts without mutation", (
 
 test("all required fields are validated while additive fields remain compatible", () => {
   for (const key of Object.keys(fixture)) {
+    if (key === "message") continue;
     assert.throws(() => validateSnapshot(changed(value => { delete value[key]; })), undefined, `missing ${key}`);
   }
   for (const key of Object.keys(fixture.config)) {
@@ -58,6 +59,44 @@ test("all required fields are validated while additive fields remain compatible"
     value.config.extension = 1;
     value.records[0].extension = true;
   })));
+});
+
+test("optional snapshot message must be a string when present", () => {
+  assert.doesNotThrow(() => validateSnapshot(changed(value => { delete value.message; })));
+  for (const message of ["", "History is incomplete"]) {
+    assert.doesNotThrow(() => validateSnapshot(changed(value => { value.message = message; })));
+  }
+  for (const message of [null, false, 1, [], {}]) {
+    assert.throws(() => validateSnapshot(changed(value => { value.message = message; })), /message/);
+  }
+});
+
+test("prices round exact binary64 values to eight decimals with ties to even", () => {
+  const cases = [
+    [0.001953125, "0.00195312"],
+    [-0.001953125, "-0.00195312"],
+    [0.005859375, "0.00585938"],
+    [-0.005859375, "-0.00585938"],
+    [1.000000005, "1.00000000"],
+    [-1.000000005, "-1.00000000"],
+    [0, "0.00000000"],
+    [-0, "0.00000000"],
+    [1e-12, "0.00000000"],
+    [-1e-12, "0.00000000"],
+    [Number.MIN_VALUE, "0.00000000"],
+    [-Number.MIN_VALUE, "0.00000000"],
+    [1e21, "1000000000000000000000.00000000"],
+    [1e100, "10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.00000000"],
+    [Number.MAX_VALUE, `${((1n << 53n) - 1n) * (1n << 971n)}.00000000`],
+    [-Number.MAX_VALUE, `-${((1n << 53n) - 1n) * (1n << 971n)}.00000000`],
+  ];
+  for (const [price, expectedPrice] of cases) {
+    const snapshot = validateSnapshot(changed(value => {
+      value.records = [{ ...value.records[0], lower: price, upper: price }];
+    }));
+    const row = renderSnapshot(snapshot).trimEnd().split("\n")[1].split("\t");
+    assert.deepEqual(row.slice(4), [expectedPrice, expectedPrice], `price ${price}`);
+  }
 });
 
 test("invalid data cannot be rendered as an empty successful snapshot", () => {

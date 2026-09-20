@@ -132,6 +132,7 @@ export function validateSnapshot(input: unknown): Snapshot {
   for (const field of ["library_version", "symbol", "timeframe"]) nonempty(value[field], field);
   enumeration(value.time_basis, "time_basis", ["broker"]);
   enumeration(value.status, "status", statuses);
+  if (Object.hasOwn(value, "message")) string(value.message, "message");
   timestamp(value.as_of, "as_of", true);
   validateConfig(value.config);
   array(value.modules, "modules").forEach((entry, index) => {
@@ -184,8 +185,33 @@ export function renderSnapshot(snapshot: Snapshot, filters: Filters = {}): strin
 }
 
 function fixedPrice(value: number): string {
-  // Number.toFixed switches to exponent notation at 1e21; the CLI always emits decimals.
-  return Math.abs(value) >= 1e21 ? `${BigInt(value)}.00000000` : value.toFixed(8);
+  // Round the exact binary64 value, avoiding an intermediate floating-point
+  // multiplication or decimal conversion that could move a rounding boundary.
+  const bytes = new DataView(new ArrayBuffer(8));
+  bytes.setFloat64(0, value, false);
+  const bits = bytes.getBigUint64(0, false);
+  const negative = (bits >> 63n) !== 0n;
+  const encodedExponent = Number((bits >> 52n) & 0x7ffn);
+  if (encodedExponent === 0x7ff) invalid("price", "a finite number");
+  const fraction = bits & ((1n << 52n) - 1n);
+  const significand = encodedExponent === 0 ? fraction : fraction | (1n << 52n);
+  const exponent = encodedExponent === 0 ? -1074 : encodedExponent - 1023 - 52;
+  const scale = 100000000n;
+  const numerator = significand * scale;
+  let rounded: bigint;
+  if (exponent >= 0) {
+    rounded = numerator << BigInt(exponent);
+  } else {
+    const denominator = 1n << BigInt(-exponent);
+    rounded = numerator / denominator;
+    const twiceRemainder = (numerator % denominator) * 2n;
+    if (twiceRemainder > denominator ||
+        (twiceRemainder === denominator && (rounded & 1n) !== 0n)) {
+      rounded += 1n;
+    }
+  }
+  const sign = negative && rounded !== 0n ? "-" : "";
+  return `${sign}${rounded / scale}.${(rounded % scale).toString().padStart(8, "0")}`;
 }
 
 const usage = "Usage: node dist/read_snapshot.js SNAPSHOT.json [--concept CONCEPT] [--direction bullish|bearish|neutral]";
