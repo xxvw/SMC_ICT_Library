@@ -144,6 +144,8 @@ struct SmcSwingPoint
    double            price;          // スイング価格
    datetime          time;           // 発生時刻
    int               barIndex;       // バーインデックス
+   datetime          confirmedTime;  // Open time of the closed confirmation candle
+   int               confirmedBar;   // Series shift when confirmation became available
    bool              isHigh;         // true=スイングハイ, false=スイングロー
    int               strength;       // 強度 (左右何本で確認)
    bool              isBroken;       // ブレイクされたか
@@ -154,6 +156,8 @@ struct SmcSwingPoint
       price    = 0;
       time     = 0;
       barIndex = 0;
+      confirmedTime = 0;
+      confirmedBar = 0;
       isHigh   = false;
       strength = 0;
       isBroken = false;
@@ -174,6 +178,12 @@ struct SmcZone
    double            bottomPrice;    // ゾーン下端
    datetime          formationTime;  // 形成時刻
    int               formationBar;   // 形成バーインデックス
+   datetime          confirmedTime;  // Open time of the closed confirmation candle
+   int               confirmedBar;   // Series shift of the confirmation candle
+   datetime          sourceFormationTime; // Parent OB source for a breaker
+   datetime          sourceConfirmedTime; // Parent OB confirmation for a breaker
+   datetime          brokenTime;     // First close beyond the opposite boundary
+   bool              isExpired;      // Expiry is distinct from a price break
    ENUM_ZONE_STATE   state;          // ゾーン状態
    ENUM_ZONE_PROBABILITY probability; // 確率分類
    bool              isBullish;      // true=強気ゾーン
@@ -188,6 +198,12 @@ struct SmcZone
       bottomPrice   = 0;
       formationTime = 0;
       formationBar  = 0;
+      confirmedTime = 0;
+      confirmedBar  = 0;
+      sourceFormationTime = 0;
+      sourceConfirmedTime = 0;
+      brokenTime    = 0;
+      isExpired     = false;
       state         = ZONE_FRESH;
       probability   = PROB_MEDIUM;
       isBullish     = false;
@@ -210,6 +226,7 @@ struct SmcStructureBreak
   {
    ENUM_STRUCTURE_TYPE type;         // BOS or CHoCH
    double            breakPrice;     // ブレイク価格
+   datetime          swingTime;      // Source pivot open time
    double            swingPrice;     // ブレイクされたスイングの価格
    datetime          time;           // 発生時刻
    int               barIndex;       // バーインデックス
@@ -220,6 +237,7 @@ struct SmcStructureBreak
      {
       type       = STRUCT_NONE;
       breakPrice = 0;
+      swingTime = 0;
       swingPrice = 0;
       time       = 0;
       barIndex   = 0;
