@@ -2,10 +2,10 @@
 //|                                                    SmcTypes.mqh  |
 //|                         SMC/ICT Concepts Library for MQL5        |
 //|                         Copyright 2025-2026, SMC_ICT_Library     |
-//|                         https://github.com/your-repo/SMC_ICT_Library     |
+//|                         https://github.com/xxvw/SMC_ICT_Library     |
 //+------------------------------------------------------------------+
 #property copyright "SMC_ICT_Library"
-#property link      "https://github.com/your-repo/SMC_ICT_Library"
+#property link      "https://github.com/xxvw/SMC_ICT_Library"
 #property version   "1.00"
 #property strict
 
@@ -15,7 +15,7 @@
 //+------------------------------------------------------------------+
 //| Library version                                                   |
 //+------------------------------------------------------------------+
-#define SMC_LIB_VERSION     "1.0.0"
+#define SMC_LIB_VERSION     "1.1.0"
 #define SMC_LIB_NAME        "SMC/ICT OSS Library"
 
 //+------------------------------------------------------------------+

@@ -60,7 +60,7 @@
 
 ```bash
 cd "あなたのMT5データフォルダ/MQL5"
-git clone https://github.com/your-repo/SMC_ICT_Library.git
+git clone https://github.com/xxvw/SMC_ICT_Library.git
 ```
 
 > **注意**: `Include/SMC/` フォルダは `MQL5/Include/SMC/` に配置する必要があります。クローンした場合は、Include内のSMCフォルダを `MQL5/Include/` 直下にコピーまたはシンボリックリンクを作成してください。
