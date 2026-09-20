@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+root=$(git rev-parse --show-toplevel)
+if [ -n "${SMC_PYTHON:-}" ]; then
+    python_command=$SMC_PYTHON
+elif [ -x "$root/.venv/bin/python" ]; then
+    python_command=$root/.venv/bin/python
+else
+    python_command=python3
+fi
+exec "$python_command" "$root/tools/check_all.py" --pre-push
