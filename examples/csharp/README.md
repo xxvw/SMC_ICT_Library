@@ -23,8 +23,13 @@ broker time basis. Subsequent lines contain tab-separated `id`, `concept`,
 places with a decimal point regardless of the current locale. A null evaluation
 time is printed as `null`.
 
+Prices are interpreted as IEEE 754 binary64 values, then their exact binary
+values are rounded to eight decimal places using nearest, ties-to-even rounding.
+Every value that renders as negative zero is printed as `0.00000000`.
+
 The reader accepts schema major version 1 and ignores unknown additive fields.
 Missing or invalid required fields, unsupported versions, non-finite values,
 invalid enum values, and reversed price bounds fail with a message on stderr and
-a nonzero exit code. Broker timestamps have no UTC `Z` suffix and are not
+a nonzero exit code. The optional top-level `message` must be a string when
+present. Broker timestamps have no UTC `Z` suffix and are not
 converted to local time.

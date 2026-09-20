@@ -73,6 +73,8 @@ public static class SnapshotReader
             throw new InvalidDataException("time_basis must be broker");
         var asOf = Timestamp(snapshot, "as_of", nullable: true);
         var status = Choice(snapshot, "status", Statuses);
+        if (snapshot.TryGetProperty("message", out var message))
+            String(message, "message", allowEmpty: true);
         ValidateConfig(Property(snapshot, "config"));
         foreach (var module in Array(snapshot, "modules"))
             ValidateModule(module);
@@ -96,10 +98,16 @@ public static class SnapshotReader
                 continue;
             lines.Add(string.Join('\t', Text(record, "id"), Text(record, "concept"),
                 Text(record, "direction"), Text(record, "state"),
-                Number(record, "lower").ToString("F8", CultureInfo.InvariantCulture),
-                Number(record, "upper").ToString("F8", CultureInfo.InvariantCulture)));
+                FormatPrice(Number(record, "lower")), FormatPrice(Number(record, "upper"))));
         }
         return lines;
+    }
+
+    // .NET formats the exact binary64 value with nearest, ties-to-even rounding.
+    private static string FormatPrice(double value)
+    {
+        var formatted = value.ToString("F8", CultureInfo.InvariantCulture);
+        return formatted == "-0.00000000" ? "0.00000000" : formatted;
     }
 
     private static void ValidateConfig(JsonElement config)
