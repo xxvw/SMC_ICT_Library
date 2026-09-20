@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 COMMANDS = [
-    [sys.executable, "-m", "compileall", "-q", "Python", "tools"],
+    [sys.executable, "-m", "compileall", "-q", "Python", "tools", "examples/python"],
     [
         sys.executable,
         "-m",
@@ -18,6 +18,7 @@ COMMANDS = [
         "check",
         "Python",
         "tools",
+        "examples/python",
         "--select",
         "E9,F63,F7,F82",
         "--output-format=github",
@@ -27,6 +28,7 @@ COMMANDS = [
 
 
 def main() -> int:
+    print(f"Python: {sys.version}", flush=True)
     for command in COMMANDS:
         print(f"+ {' '.join(command)}", flush=True)
         completed = subprocess.run(command, cwd=ROOT)

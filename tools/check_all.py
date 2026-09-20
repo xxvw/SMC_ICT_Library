@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
+import platform
 import subprocess
 import sys
 import tarfile
@@ -14,12 +16,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REQUIRED_PROFILE = "bootstrap"
+REQUIRED_PROFILE = "full"
+REPORT_SCHEMA_VERSION = 2
+EXAMPLE_LANGUAGES = ("python", "typescript", "go", "csharp", "rust", "java")
+FAST_CHECKS = [
+    ("python", [sys.executable, "tools/check_python.py"]),
+    ("mql5-static", [sys.executable, "tools/check_mql5_static.py"]),
+    ("validation-tests", [sys.executable, "-m", "unittest", "discover", "-s", "tools/tests"]),
+    ("docs", [sys.executable, "tools/check_docs.py"]),
+]
 PROFILES = {
-    "bootstrap": [
-        ("python", [sys.executable, "tools/check_python.py"]),
-        ("mql5-static", [sys.executable, "tools/check_mql5_static.py"]),
-        ("validation-tests", [sys.executable, "-m", "unittest", "discover", "-s", "tools/tests"]),
+    "fast": FAST_CHECKS,
+    "full": [
+        *FAST_CHECKS,
+        ("mql5-compile", [sys.executable, "tools/check_mql5_compile.py"]),
+        ("mt5-examples", [sys.executable, "tools/check_end_to_end.py"]),
     ],
 }
 
@@ -31,6 +42,67 @@ def git(root: Path, *args: str) -> str:
 def require_clean(root: Path) -> None:
     if git(root, "status", "--porcelain", "--untracked-files=all"):
         raise ValueError("Commit or stash changes before validating or publishing.")
+
+
+def profile_commands(root: Path, profile: str) -> list[tuple[str, list[str]]]:
+    """Pass explicit documentation paths so the checker also works in archives."""
+    commands = []
+    for name, original in PROFILES[profile]:
+        command = list(original)
+        if name == "docs":
+            if (root / ".git").exists():
+                output = subprocess.check_output(
+                    ["git", "ls-files", "-z", "--", "*.md", "*.markdown"], cwd=root,
+                )
+                documents = [path for path in output.decode().split("\0") if path]
+            else:
+                documents = [path.relative_to(root).as_posix() for path in root.rglob("*")
+                             if path.is_file() and path.suffix in {".md", ".markdown"}]
+            if not documents:
+                raise ValueError("No Markdown documents found for the required link check.")
+            command.extend(sorted(documents))
+        commands.append((name, command))
+    return commands
+
+
+def normalized_command(command: list[str]) -> list[str]:
+    return ["$PYTHON" if argument == sys.executable else argument for argument in command]
+
+
+def profile_fingerprint(root: Path, profile: str) -> str:
+    """Bind evidence to command definitions and the validation tools' contents."""
+    files = sorted((root / "tools").rglob("*.py"))
+    requirements = root / "requirements-dev.txt"
+    if requirements.is_file():
+        files.append(requirements)
+    definition = {
+        "schema_version": REPORT_SCHEMA_VERSION,
+        "profile": profile,
+        "commands": [(name, normalized_command(command)) for name, command in profile_commands(root, profile)],
+        "tools": {path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                  for path in files},
+    }
+    return hashlib.sha256(json.dumps(definition, sort_keys=True).encode()).hexdigest()
+
+
+def verify_end_to_end_evidence(evidence: dict) -> None:
+    if not isinstance(evidence, dict) or evidence.get("success") is not True or evidence.get("completed") is not True:
+        raise ValueError("End-to-end validation did not produce complete success evidence.")
+    snapshots = evidence.get("snapshots")
+    checks = evidence.get("checks")
+    if not isinstance(snapshots, list) or not snapshots or not isinstance(checks, list):
+        raise ValueError("End-to-end evidence has no generated snapshots or reader results.")
+    if evidence.get("languages") != list(EXAMPLE_LANGUAGES) or [check.get("language") for check in checks] != list(EXAMPLE_LANGUAGES):
+        raise ValueError("End-to-end evidence does not cover all six readers.")
+    if any(check.get("success") is not True or check.get("snapshots") != len(snapshots)
+           or type(check.get("assertions")) is not int or check["assertions"] <= 0 for check in checks):
+        raise ValueError("A reader did not validate every generated snapshot.")
+    versions = evidence.get("versions", {})
+    required_versions = ("python", "node", "npm", "go", "dotnet", "cargo", "rustc", "mvn", "java",
+                         "metaeditor_sha256", "terminal_sha256")
+    if not isinstance(versions, dict) or any(not isinstance(versions.get(name), str) or not versions[name]
+                                          for name in required_versions):
+        raise ValueError("End-to-end evidence is missing required tool versions.")
 
 
 def parse_push_updates(lines: list[str]) -> list[str]:
@@ -54,9 +126,14 @@ def run_check(root: Path, name: str, command: list[str]) -> dict:
         result = subprocess.run(command, cwd=root, text=True, capture_output=True)
         output = result.stdout + result.stderr
         print(output, end="" if output.endswith("\n") else "\n", flush=True)
-        return {"name": name, "command": command, "returncode": result.returncode,
-                "success": result.returncode == 0, "output": output[-12000:]}
-    except OSError as exc:
+        check = {"name": name, "command": command, "returncode": result.returncode,
+                 "success": result.returncode == 0, "output": output[-12000:]}
+        if name == "mt5-examples" and check["success"]:
+            evidence = json.loads((root / ".validation/end-to-end.json").read_text(encoding="utf-8"))
+            verify_end_to_end_evidence(evidence)
+            check["evidence"] = evidence
+        return check
+    except (OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return {"name": name, "command": command, "returncode": None,
                 "success": False, "output": str(exc)}
@@ -70,8 +147,10 @@ def write_report(path: Path, report: dict) -> None:
 
 
 def validate(root: Path, revision: str, profile: str, report_path: Path) -> bool:
-    report = {"schema_version": 1, "profile": profile, "success": False,
+    report = {"schema_version": REPORT_SCHEMA_VERSION, "profile": profile, "success": False,
               "completed": False, "checks": [],
+              "environment": {"python": platform.python_version(), "python_executable": sys.executable,
+                              "platform": platform.platform()},
               "started_at": datetime.now(timezone.utc).isoformat()}
     # Invalidate any earlier successful report even when setup or a tool fails.
     write_report(report_path, report)
@@ -98,7 +177,8 @@ def validate(root: Path, revision: str, profile: str, report_path: Path) -> bool
                         if not target.is_relative_to(snapshot):
                             raise ValueError("Archive link escapes the validation checkout.")
                 bundle.extractall(snapshot, filter="data")
-            for name, command in PROFILES[profile]:
+            report["profile_fingerprint"] = profile_fingerprint(snapshot, profile)
+            for name, command in profile_commands(snapshot, profile):
                 report["checks"].append(run_check(snapshot, name, command))
                 write_report(report_path, report)
         require_clean(root)
@@ -132,7 +212,7 @@ def main() -> int:
             print(str(exc), file=sys.stderr)
             return 1
         for commit in commits:
-            if not validate(ROOT, commit, "bootstrap", ROOT / f".validation/push-{commit}.json"):
+            if not validate(ROOT, commit, "fast", ROOT / f".validation/push-{commit}.json"):
                 return 1
         return 0
     return 0 if validate(ROOT, args.commit, args.profile, args.report.resolve()) else 1
