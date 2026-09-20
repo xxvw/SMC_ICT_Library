@@ -50,6 +50,8 @@ public:
    virtual void      Clean();
 
    //--- 設定変更
+   int               GetSwingPeriod() const { return m_swingPeriod; }
+   int               GetLookbackBars() const { return m_lookbackBars; }
    void              SetSwingPeriod(const int period) { m_swingPeriod = MathMax(1, period); }
    void              SetColors(const color highClr, const color lowClr)
      { m_colorHigh = highClr; m_colorLow = lowClr; }
@@ -124,10 +126,11 @@ bool CSmcSwingPoints::Init(const string symbol, const ENUM_TIMEFRAMES timeframe,
                            const bool enableDraw, const int swingPeriod,
                            const int maxPoints, const int lookbackBars)
   {
+   m_highCount = 0; m_lowCount = 0;
    if(!CSmcBase::Init(symbol, timeframe, enableDraw))
       return false;
 
-   m_prefix       = "SMC_SW_";
+   SetModulePrefix("SW");
    m_swingPeriod  = MathMax(1, swingPeriod);
    m_maxPoints    = MathMax(10, maxPoints);
    m_lookbackBars = MathMax(50, lookbackBars);
@@ -146,11 +149,15 @@ bool CSmcSwingPoints::Init(const string symbol, const ENUM_TIMEFRAMES timeframe,
 //+------------------------------------------------------------------+
 bool CSmcSwingPoints::Update()
   {
-   if(!m_initialized)
-      return false;
-
+   if(m_enableDraw)
+      CSmcDrawing::DeleteObjectsByPrefix(m_prefix);
    m_highCount = 0;
    m_lowCount  = 0;
+   if(!m_initialized || !PrepareRates(m_lookbackBars + 2 * m_swingPeriod + 2) ||
+      RatesCount() < 2 * m_swingPeriod + 2)
+      return false;
+   ArrayResize(m_swingHighs, m_maxPoints);
+   ArrayResize(m_swingLows, m_maxPoints);
 
    DetectSwingPoints();
    UpdateBreakStatus();
@@ -256,9 +263,9 @@ bool CSmcSwingPoints::IsLowBroken(const int index) const
 //+------------------------------------------------------------------+
 void CSmcSwingPoints::DetectSwingPoints()
   {
-   int limit = MathMin(m_lookbackBars, iBars(m_symbol, m_timeframe) - m_swingPeriod - 1);
+   int limit = MathMin(m_lookbackBars + 1, RatesCount() - m_swingPeriod);
 
-   for(int i = m_swingPeriod; i < limit; i++)
+   for(int i = m_swingPeriod + 1; i < limit; i++)
      {
       //--- スイングハイ検出
       if(IsSwingHigh(i) && m_highCount < m_maxPoints)
@@ -266,6 +273,8 @@ void CSmcSwingPoints::DetectSwingPoints()
          m_swingHighs[m_highCount].price    = High(i);
          m_swingHighs[m_highCount].time     = Time(i);
          m_swingHighs[m_highCount].barIndex = i;
+         m_swingHighs[m_highCount].confirmedBar = i - m_swingPeriod;
+         m_swingHighs[m_highCount].confirmedTime = Time(i - m_swingPeriod);
          m_swingHighs[m_highCount].isHigh   = true;
          m_swingHighs[m_highCount].strength = CalcStrength(i, true);
          m_swingHighs[m_highCount].isBroken = false;
@@ -279,6 +288,8 @@ void CSmcSwingPoints::DetectSwingPoints()
          m_swingLows[m_lowCount].price    = Low(i);
          m_swingLows[m_lowCount].time     = Time(i);
          m_swingLows[m_lowCount].barIndex = i;
+         m_swingLows[m_lowCount].confirmedBar = i - m_swingPeriod;
+         m_swingLows[m_lowCount].confirmedTime = Time(i - m_swingPeriod);
          m_swingLows[m_lowCount].isHigh   = false;
          m_swingLows[m_lowCount].strength = CalcStrength(i, false);
          m_swingLows[m_lowCount].isBroken = false;
@@ -359,7 +370,7 @@ int CSmcSwingPoints::CalcStrength(const int barIndex, const bool isHigh) const
       double high = High(barIndex);
       for(int i = m_swingPeriod + 1; i <= maxExtra; i++)
         {
-         if(barIndex + i >= iBars(m_symbol, m_timeframe))
+         if(barIndex + i >= RatesCount())
             break;
          if(High(barIndex + i) >= high)
             break;
@@ -371,7 +382,7 @@ int CSmcSwingPoints::CalcStrength(const int barIndex, const bool isHigh) const
       double low = Low(barIndex);
       for(int i = m_swingPeriod + 1; i <= maxExtra; i++)
         {
-         if(barIndex + i >= iBars(m_symbol, m_timeframe))
+         if(barIndex + i >= RatesCount())
             break;
          if(Low(barIndex + i) <= low)
             break;
@@ -387,8 +398,6 @@ int CSmcSwingPoints::CalcStrength(const int barIndex, const bool isHigh) const
 //+------------------------------------------------------------------+
 void CSmcSwingPoints::UpdateBreakStatus()
   {
-   double currentHigh = High(0);
-   double currentLow  = Low(0);
 
 //--- スイングハイのブレイク判定
    for(int i = 0; i < m_highCount; i++)
@@ -396,9 +405,9 @@ void CSmcSwingPoints::UpdateBreakStatus()
       if(!m_swingHighs[i].isBroken)
         {
          //--- 現在の高値がスイングハイを上回ったらブレイク
-         for(int j = 0; j < m_swingHighs[i].barIndex; j++)
+         for(int j = m_swingHighs[i].confirmedBar - 1; j >= 1; j--)
            {
-            if(High(j) > m_swingHighs[i].price)
+            if(High(j) >= NormalizePrice(m_swingHighs[i].price + m_tickSize))
               {
                m_swingHighs[i].isBroken = true;
                break;
@@ -412,9 +421,9 @@ void CSmcSwingPoints::UpdateBreakStatus()
      {
       if(!m_swingLows[i].isBroken)
         {
-         for(int j = 0; j < m_swingLows[i].barIndex; j++)
+         for(int j = m_swingLows[i].confirmedBar - 1; j >= 1; j--)
            {
-            if(Low(j) < m_swingLows[i].price)
+            if(Low(j) <= NormalizePrice(m_swingLows[i].price - m_tickSize))
               {
                m_swingLows[i].isBroken = true;
                break;
