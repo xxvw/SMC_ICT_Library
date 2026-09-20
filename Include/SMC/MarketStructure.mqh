@@ -66,6 +66,15 @@ public:
    bool              IsRanging()        const { return m_currentTrend == SMC_TREND_RANGING; }
 
    //--- 構造ブレイク
+   void              SetMaxBreaks(const int maxRecords)
+     {
+      m_maxBreaks = MathMax(1, maxRecords);
+      ArrayResize(m_breakHistory, m_maxBreaks);
+      ResetState();
+     }
+   // History is chronological (oldest retained break first).
+   int               GetBreakCount() const { return m_breakCount; }
+   bool              GetBreak(const int index, SmcStructureBreak &brk) const;
    bool              GetLastBOS(SmcStructureBreak &brk) const;
    bool              GetLastCHoCH(SmcStructureBreak &brk) const;
    bool              HasRecentBOS(const int withinBars = 10) const;
@@ -81,7 +90,7 @@ public:
 private:
    void              AnalyzeStructure();
    void              DetectStructureBreaks();
-   void              DetectTrend();
+   void              ResetState();
    void              DetectRange();
    void              AddBreakToHistory(const SmcStructureBreak &brk);
    void              DrawStructure();
@@ -127,32 +136,40 @@ CSmcMarketStructure::~CSmcMarketStructure()
 bool CSmcMarketStructure::Init(const string symbol, const ENUM_TIMEFRAMES timeframe,
                                const bool enableDraw, CSmcSwingPoints *swingPoints)
   {
+   // Reinitialization must release the previous owned dependency.
+   Clean();
+   bool keepOwned = m_ownSwing && m_swingPoints == swingPoints && swingPoints != NULL;
+   if(m_ownSwing && m_swingPoints != NULL && !keepOwned)
+      delete m_swingPoints;
+   m_swingPoints = keepOwned ? swingPoints : NULL;
+   m_ownSwing = keepOwned;
+   ResetState();
+
    if(!CSmcBase::Init(symbol, timeframe, enableDraw))
       return false;
 
-   m_prefix = "SMC_STR_";
-
-//--- SwingPoints設定
+   SetModulePrefix("STR");
    if(swingPoints != NULL)
-     {
       m_swingPoints = swingPoints;
-      m_ownSwing    = false;
-     }
    else
      {
       m_swingPoints = new CSmcSwingPoints();
-      if(!m_swingPoints.Init(symbol, timeframe, enableDraw))
+      if(m_swingPoints == NULL || !m_swingPoints.Init(symbol, timeframe, enableDraw))
         {
-         delete m_swingPoints;
+         if(m_swingPoints != NULL)
+            delete m_swingPoints;
          m_swingPoints = NULL;
+         m_initialized = false;
          return false;
         }
       m_ownSwing = true;
      }
 
-   ArrayResize(m_breakHistory, m_maxBreaks);
-   m_breakCount = 0;
-
+   if(ArrayResize(m_breakHistory, m_maxBreaks) != m_maxBreaks)
+     {
+      m_initialized = false;
+      return false;
+     }
    return true;
   }
 
@@ -161,21 +178,28 @@ bool CSmcMarketStructure::Init(const string symbol, const ENUM_TIMEFRAMES timefr
 //+------------------------------------------------------------------+
 bool CSmcMarketStructure::Update()
   {
-   if(!m_initialized || m_swingPoints == NULL)
+   // Rebuild from the same history on every call, including repeated calls
+   // for one bar. A failed update must never expose a stale signal.
+   ResetState();
+   if(m_enableDraw)
+      CSmcDrawing::DeleteObjectsByPrefix(m_prefix);
+   if(!m_initialized || m_swingPoints == NULL || !PrepareRates())
       return false;
 
-//--- SwingPointsが自前の場合は更新
+   const int period = m_swingPoints.GetSwingPeriod();
+   if(RatesCount() < 2 * period + 2)
+      return false;
+
    if(m_ownSwing)
      {
+      m_swingPoints.SetRates(m_rates);
       if(!m_swingPoints.Update())
          return false;
      }
 
    AnalyzeStructure();
-
    if(m_enableDraw)
       DrawStructure();
-
    return true;
   }
 
@@ -193,6 +217,14 @@ void CSmcMarketStructure::Clean()
 //+------------------------------------------------------------------+
 //| 直近BOS取得                                                        |
 //+------------------------------------------------------------------+
+bool CSmcMarketStructure::GetBreak(const int index, SmcStructureBreak &brk) const
+  {
+   if(index < 0 || index >= m_breakCount)
+      return false;
+   brk = m_breakHistory[index];
+   return true;
+  }
+
 bool CSmcMarketStructure::GetLastBOS(SmcStructureBreak &brk) const
   {
    if(!m_lastBOS.isValid)
@@ -268,116 +300,114 @@ ENUM_ENTRY_SIGNAL CSmcMarketStructure::GetEntryDirection() const
 //+------------------------------------------------------------------+
 void CSmcMarketStructure::AnalyzeStructure()
   {
-   DetectTrend();
    DetectStructureBreaks();
    DetectRange();
   }
 
 //+------------------------------------------------------------------+
-//| トレンド検出                                                       |
+//| Reset both outputs and replay state.                              |
 //+------------------------------------------------------------------+
-void CSmcMarketStructure::DetectTrend()
+void CSmcMarketStructure::ResetState()
   {
-   m_previousTrend = m_currentTrend;
-   m_currentTrend  = m_swingPoints.GetTrendDirection();
+   m_currentTrend = SMC_TREND_RANGING;
+   m_previousTrend = SMC_TREND_RANGING;
+   m_lastBOS.Init();
+   m_lastCHoCH.Init();
+   m_currentRange.Init();
+   m_breakCount = 0;
   }
 
 //+------------------------------------------------------------------+
-//| 構造ブレイク検出 (BOS / CHoCH)                                    |
+//| Replay closed bars; a pivot becomes known only after its right    |
+//| confirmation bars close. Do not use final swing isBroken flags or |
+//| the capped final swing list: either would leak future information.|
 //+------------------------------------------------------------------+
 void CSmcMarketStructure::DetectStructureBreaks()
   {
-   m_lastBOS.Init();
-   m_lastCHoCH.Init();
+   const int count = RatesCount();
+   const int period = m_swingPoints.GetSwingPeriod();
+   const int lastClosed = count - 2;
+   const double tick = m_tickSize > 0 ? m_tickSize : m_point;
+   double lastHigh = 0, previousHigh = 0;
+   datetime lastHighTime = 0, lastLowTime = 0;
+   double lastLow = 0, previousLow = 0;
+   int highCount = 0, lowCount = 0;
+   bool highBroken = true, lowBroken = true;
 
-   if(m_swingPoints.GetHighCount() < 2 || m_swingPoints.GetLowCount() < 2)
-      return;
-
-   SmcSwingPoint lastHigh, prevHigh, lastLow, prevLow;
-   m_swingPoints.GetSwingHigh(0, lastHigh);
-   m_swingPoints.GetSwingHigh(1, prevHigh);
-   m_swingPoints.GetSwingLow(0, lastLow);
-   m_swingPoints.GetSwingLow(1, prevLow);
-
-//--- 直近数バーでのブレイクをチェック
-   for(int i = 1; i <= 10; i++)
+   for(int bar = 2 * period; bar <= lastClosed; bar++)
      {
-      double high  = High(i);
-      double low   = Low(i);
-      datetime time = Time(i);
-
-      //--- 上方ブレイク
-      if(high > lastHigh.price && i < lastHigh.barIndex)
+      // GetPreviousTrend describes the previous closed bar, not the
+      // previous invocation of Update().
+      m_previousTrend = m_currentTrend;
+      const int pivot = bar - period;
+      bool isHigh = true, isLow = true;
+      for(int side = 1; side <= period; side++)
         {
-         if(m_previousTrend == SMC_TREND_BULLISH || m_currentTrend == SMC_TREND_BULLISH)
-           {
-            //--- BOS (上昇トレンド継続)
-            if(!m_lastBOS.isValid || time > m_lastBOS.time)
-              {
-               m_lastBOS.type       = STRUCT_BOS;
-               m_lastBOS.breakPrice = high;
-               m_lastBOS.swingPrice = lastHigh.price;
-               m_lastBOS.time       = time;
-               m_lastBOS.barIndex   = i;
-               m_lastBOS.isBullish  = true;
-               m_lastBOS.isValid    = true;
-              }
-           }
-         else if(m_previousTrend == SMC_TREND_BEARISH)
-           {
-            //--- CHoCH (下降→上昇転換)
-            if(!m_lastCHoCH.isValid || time > m_lastCHoCH.time)
-              {
-               m_lastCHoCH.type       = STRUCT_CHOCH;
-               m_lastCHoCH.breakPrice = high;
-               m_lastCHoCH.swingPrice = lastHigh.price;
-               m_lastCHoCH.time       = time;
-               m_lastCHoCH.barIndex   = i;
-               m_lastCHoCH.isBullish  = true;
-               m_lastCHoCH.isValid    = true;
-              }
-           }
+         if(m_rates[pivot - side].high >= m_rates[pivot].high ||
+            m_rates[pivot + side].high >= m_rates[pivot].high)
+            isHigh = false;
+         if(m_rates[pivot - side].low <= m_rates[pivot].low ||
+            m_rates[pivot + side].low <= m_rates[pivot].low)
+            isLow = false;
+        }
+      if(isHigh)
+        {
+         previousHigh = lastHigh;
+         lastHigh = m_rates[pivot].high;
+         lastHighTime = m_rates[pivot].time;
+         highCount++;
+         highBroken = false;
+        }
+      if(isLow)
+        {
+         previousLow = lastLow;
+         lastLow = m_rates[pivot].low;
+         lastLowTime = m_rates[pivot].time;
+         lowCount++;
+         lowBroken = false;
         }
 
-      //--- 下方ブレイク
-      if(low < lastLow.price && i < lastLow.barIndex)
+      // Only newly confirmed evidence can establish a structural trend.
+      // Mixed/equal swings preserve the known trend until a reversal.
+      if((isHigh || isLow) && highCount >= 2 && lowCount >= 2)
         {
-         if(m_previousTrend == SMC_TREND_BEARISH || m_currentTrend == SMC_TREND_BEARISH)
-           {
-            //--- BOS (下降トレンド継続)
-            if(!m_lastBOS.isValid || time > m_lastBOS.time)
-              {
-               m_lastBOS.type       = STRUCT_BOS;
-               m_lastBOS.breakPrice = low;
-               m_lastBOS.swingPrice = lastLow.price;
-               m_lastBOS.time       = time;
-               m_lastBOS.barIndex   = i;
-               m_lastBOS.isBullish  = false;
-               m_lastBOS.isValid    = true;
-              }
-           }
-         else if(m_previousTrend == SMC_TREND_BULLISH)
-           {
-            //--- CHoCH (上昇→下降転換)
-            if(!m_lastCHoCH.isValid || time > m_lastCHoCH.time)
-              {
-               m_lastCHoCH.type       = STRUCT_CHOCH;
-               m_lastCHoCH.breakPrice = low;
-               m_lastCHoCH.swingPrice = lastLow.price;
-               m_lastCHoCH.time       = time;
-               m_lastCHoCH.barIndex   = i;
-               m_lastCHoCH.isBullish  = false;
-               m_lastCHoCH.isValid    = true;
-              }
-           }
+         if(lastHigh > previousHigh && lastLow > previousLow)
+            m_currentTrend = SMC_TREND_BULLISH;
+         else if(lastHigh < previousHigh && lastLow < previousLow)
+            m_currentTrend = SMC_TREND_BEARISH;
         }
+
+      bool bullishBreak = !highBroken &&
+                          NormalizePrice(m_rates[bar].close) >= NormalizePrice(lastHigh + tick);
+      bool bearishBreak = !lowBroken &&
+                          NormalizePrice(m_rates[bar].close) <= NormalizePrice(lastLow - tick);
+      // Consume the target even before a trend is known, so a later
+      // close cannot retroactively label an earlier break.
+      if(bullishBreak)
+         highBroken = true;
+      if(bearishBreak)
+         lowBroken = true;
+      if((!bullishBreak && !bearishBreak) || m_currentTrend == SMC_TREND_RANGING)
+         continue;
+
+      SmcStructureBreak brk;
+      brk.Init();
+      brk.isBullish = bullishBreak;
+      brk.type = ((bullishBreak && m_currentTrend == SMC_TREND_BULLISH) ||
+                  (bearishBreak && m_currentTrend == SMC_TREND_BEARISH)) ? STRUCT_BOS : STRUCT_CHOCH;
+      brk.breakPrice = m_rates[bar].close;
+      brk.swingPrice = bullishBreak ? lastHigh : lastLow;
+      brk.swingTime = bullishBreak ? lastHighTime : lastLowTime;
+      brk.time = m_rates[bar].time;
+      brk.barIndex = count - 1 - bar;
+      brk.isValid = true;
+      if(brk.type == STRUCT_BOS)
+         m_lastBOS = brk;
+      else
+         m_lastCHoCH = brk;
+      AddBreakToHistory(brk);
+      m_currentTrend = bullishBreak ? SMC_TREND_BULLISH : SMC_TREND_BEARISH;
      }
-
-//--- 履歴に追加
-   if(m_lastBOS.isValid)
-      AddBreakToHistory(m_lastBOS);
-   if(m_lastCHoCH.isValid)
-      AddBreakToHistory(m_lastCHoCH);
   }
 
 //+------------------------------------------------------------------+
@@ -410,18 +440,19 @@ void CSmcMarketStructure::DetectRange()
       m_currentRange.isValid   = m_currentRange.duration >= m_minRangeBars;
 
       //--- レンジブレイクチェック
-      double currentClose = Close(0);
-      if(currentClose > m_currentRange.highPrice)
+      double currentClose = Close(1);
+      const double tick = m_tickSize > 0 ? m_tickSize : m_point;
+      if(NormalizePrice(currentClose) >= NormalizePrice(m_currentRange.highPrice + tick))
         {
          m_currentRange.isBroken       = true;
          m_currentRange.isBullishBreak = true;
-         m_currentRange.breakTime      = Time(0);
+         m_currentRange.breakTime      = Time(1);
         }
-      else if(currentClose < m_currentRange.lowPrice)
+      else if(NormalizePrice(currentClose) <= NormalizePrice(m_currentRange.lowPrice - tick))
         {
          m_currentRange.isBroken       = true;
          m_currentRange.isBullishBreak = false;
-         m_currentRange.breakTime      = Time(0);
+         m_currentRange.breakTime      = Time(1);
         }
      }
   }
