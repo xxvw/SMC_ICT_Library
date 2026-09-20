@@ -27,6 +27,7 @@ protected:
    string            m_symbol;        // 対象シンボル
    ENUM_TIMEFRAMES   m_timeframe;     // 対象タイムフレーム
    double            m_point;         // 1ポイントの価格
+   double            m_tickSize;      // Minimum tradable price increment
    int               m_digits;        // 価格桁数
    double            m_pipSize;       // 1Pipの価格サイズ
    int               m_pipDigits;     // Pip桁数 (3桁/5桁通貨用)
@@ -34,6 +35,14 @@ protected:
    string            m_prefix;        // チャートオブジェクト接頭辞
    int               m_atrHandle;     // ATRインジケーターハンドル
    bool              m_initialized;   // 初期化完了フラグ
+   MqlRates          m_rates[];       // Chronological; last element is forming bar
+   bool              m_sharedRates;
+   // Transitional source compatibility for subclasses that have never
+   // requested a captured context. An attempted capture permanently disables
+   // terminal getter fallback until the next Init(), even if capture fails.
+   bool              m_ratesContextAttempted;
+   bool              m_ratesValid;
+   string            m_instanceId;
 
 public:
                      CSmcBase();
@@ -45,14 +54,23 @@ public:
    virtual bool      Update() = 0;    // 純粋仮想: 各モジュールで実装
    virtual void      Clean();         // チャートオブジェクトの削除
 
+   // Rates are copied so every detector sees one immutable evaluation context.
+   void              SetRates(const MqlRates &rates[]);
+   int               RatesCount() const { return ArraySize(m_rates); }
+
    //--- アクセサ
    string            Symbol()       const { return m_symbol; }
    ENUM_TIMEFRAMES   Timeframe()    const { return m_timeframe; }
    bool              IsInitialized() const { return m_initialized; }
    bool              IsDrawEnabled() const { return m_enableDraw; }
-   void              SetDrawEnabled(const bool enabled) { m_enableDraw = enabled; }
+   void              SetDrawEnabled(const bool enabled)
+     { if(!enabled) Clean(); m_enableDraw = enabled; }
 
 protected:
+   bool              PrepareRates(const int requested = 1001);
+   bool              ValidateRates() const;
+   void              SetModulePrefix(const string module);
+
    //--- Pips変換
    double            PipsToPrice(const double pips) const;
    double            PriceToPips(const double priceDistance) const;
@@ -90,14 +108,23 @@ CSmcBase::CSmcBase()
    : m_symbol("")
    , m_timeframe(PERIOD_CURRENT)
    , m_point(0)
+   , m_tickSize(0)
    , m_digits(0)
    , m_pipSize(0)
    , m_pipDigits(0)
    , m_enableDraw(false)
-   , m_prefix("SMC_")
+   , m_prefix("")
    , m_atrHandle(INVALID_HANDLE)
    , m_initialized(false)
+   , m_sharedRates(false)
+   , m_ratesContextAttempted(false)
+   , m_ratesValid(false)
   {
+   static ulong nextInstance = 0;
+   nextInstance++;
+   m_instanceId = IntegerToString((long)GetMicrosecondCount()) + "_" +
+                  IntegerToString((long)nextInstance);
+   SetModulePrefix("BASE");
   }
 
 //+------------------------------------------------------------------+
@@ -119,6 +146,17 @@ CSmcBase::~CSmcBase()
 bool CSmcBase::Init(const string symbol, const ENUM_TIMEFRAMES timeframe,
                     const bool enableDraw)
   {
+   Clean();
+   m_initialized = false;
+   m_sharedRates = false;
+   m_ratesContextAttempted = false;
+   m_ratesValid = false;
+   ArrayFree(m_rates);
+   if(m_atrHandle != INVALID_HANDLE)
+     {
+      IndicatorRelease(m_atrHandle);
+      m_atrHandle = INVALID_HANDLE;
+     }
    m_symbol     = (symbol == "" || symbol == "0") ? _Symbol : symbol;
    m_timeframe  = (timeframe == PERIOD_CURRENT) ? (ENUM_TIMEFRAMES)Period() : timeframe;
    m_enableDraw = enableDraw;
@@ -126,6 +164,8 @@ bool CSmcBase::Init(const string symbol, const ENUM_TIMEFRAMES timeframe,
 //--- シンボル情報取得
    m_point  = SymbolInfoDouble(m_symbol, SYMBOL_POINT);
    m_digits = (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS);
+   m_tickSize = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(m_tickSize <= 0) m_tickSize = m_point;
 
    if(m_point == 0)
      {
@@ -136,13 +176,7 @@ bool CSmcBase::Init(const string symbol, const ENUM_TIMEFRAMES timeframe,
 //--- Pipサイズ検出
    DetectPipSize();
 
-//--- ATRインジケーター作成
-   m_atrHandle = iATR(m_symbol, m_timeframe, 14);
-   if(m_atrHandle == INVALID_HANDLE)
-     {
-      Print("[SMC] Warning: Failed to create ATR indicator for ", m_symbol);
-     }
-
+// Rates and volatility calculations share the same captured history.
    m_initialized = true;
    return true;
   }
@@ -152,7 +186,7 @@ bool CSmcBase::Init(const string symbol, const ENUM_TIMEFRAMES timeframe,
 //+------------------------------------------------------------------+
 void CSmcBase::Clean()
   {
-   if(!m_enableDraw)
+   if(m_prefix == "")
       return;
 
    int total = ObjectsTotal(0, 0, -1);
@@ -196,18 +230,18 @@ double CSmcBase::NormalizePrice(const double price) const
 //+------------------------------------------------------------------+
 double CSmcBase::GetATR(const int period, const int shift)
   {
-   if(m_atrHandle == INVALID_HANDLE)
+   if(period <= 0 || shift < 0 ||
+      (m_ratesContextAttempted && shift + period >= RatesCount()))
+      return 0;
+   double sum = 0;
+   for(int i = shift; i < shift + period; i++)
      {
-      //--- フォールバック: 手動計算
-      return GetAverageRange(period, shift);
+      double previousClose = Close(i + 1);
+      sum += MathMax(High(i) - Low(i),
+                     MathMax(MathAbs(High(i) - previousClose),
+                             MathAbs(Low(i) - previousClose)));
      }
-
-   double buffer[];
-   ArraySetAsSeries(buffer, true);
-   if(CopyBuffer(m_atrHandle, 0, shift, 1, buffer) <= 0)
-      return GetAverageRange(period, shift);
-
-   return buffer[0];
+   return sum / period;
   }
 
 //+------------------------------------------------------------------+
@@ -215,17 +249,17 @@ double CSmcBase::GetATR(const int period, const int shift)
 //+------------------------------------------------------------------+
 double CSmcBase::GetAverageRange(const int period, const int shift)
   {
+   if(period <= 0 || shift < 0 ||
+      (m_ratesContextAttempted && shift + period > RatesCount()))
+      return 0;
    double sum = 0;
    int count  = 0;
 
    for(int i = shift; i < shift + period; i++)
      {
       double range = High(i) - Low(i);
-      if(range > 0)
-        {
-         sum += range;
-         count++;
-        }
+      sum += range;
+      count++;
      }
 
    return (count > 0) ? sum / count : 0;
@@ -236,17 +270,17 @@ double CSmcBase::GetAverageRange(const int period, const int shift)
 //+------------------------------------------------------------------+
 double CSmcBase::GetAverageCandleBody(const int period, const int shift)
   {
+   if(period <= 0 || shift < 0 ||
+      (m_ratesContextAttempted && shift + period > RatesCount()))
+      return 0;
    double sum = 0;
    int count  = 0;
 
    for(int i = shift; i < shift + period; i++)
      {
       double body = CandleBody(i);
-      if(body > 0)
-        {
-         sum += body;
-         count++;
-        }
+      sum += body;
+      count++;
      }
 
    return (count > 0) ? sum / count : 0;
@@ -257,32 +291,50 @@ double CSmcBase::GetAverageCandleBody(const int period, const int shift)
 //+------------------------------------------------------------------+
 double CSmcBase::High(const int shift) const
   {
-   return iHigh(m_symbol, m_timeframe, shift);
+   if(!m_ratesContextAttempted)
+      return shift >= 0 ? iHigh(m_symbol, m_timeframe, shift) : 0;
+   int index = RatesCount() - 1 - shift;
+   return (shift >= 0 && index >= 0 && index < RatesCount()) ? m_rates[index].high : 0;
   }
 
 double CSmcBase::Low(const int shift) const
   {
-   return iLow(m_symbol, m_timeframe, shift);
+   if(!m_ratesContextAttempted)
+      return shift >= 0 ? iLow(m_symbol, m_timeframe, shift) : 0;
+   int index = RatesCount() - 1 - shift;
+   return (shift >= 0 && index >= 0 && index < RatesCount()) ? m_rates[index].low : 0;
   }
 
 double CSmcBase::Open(const int shift) const
   {
-   return iOpen(m_symbol, m_timeframe, shift);
+   if(!m_ratesContextAttempted)
+      return shift >= 0 ? iOpen(m_symbol, m_timeframe, shift) : 0;
+   int index = RatesCount() - 1 - shift;
+   return (shift >= 0 && index >= 0 && index < RatesCount()) ? m_rates[index].open : 0;
   }
 
 double CSmcBase::Close(const int shift) const
   {
-   return iClose(m_symbol, m_timeframe, shift);
+   if(!m_ratesContextAttempted)
+      return shift >= 0 ? iClose(m_symbol, m_timeframe, shift) : 0;
+   int index = RatesCount() - 1 - shift;
+   return (shift >= 0 && index >= 0 && index < RatesCount()) ? m_rates[index].close : 0;
   }
 
 long CSmcBase::Volume(const int shift) const
   {
-   return iVolume(m_symbol, m_timeframe, shift);
+   if(!m_ratesContextAttempted)
+      return shift >= 0 ? iVolume(m_symbol, m_timeframe, shift) : 0;
+   int index = RatesCount() - 1 - shift;
+   return (shift >= 0 && index >= 0 && index < RatesCount()) ? m_rates[index].tick_volume : 0;
   }
 
 datetime CSmcBase::Time(const int shift) const
   {
-   return iTime(m_symbol, m_timeframe, shift);
+   if(!m_ratesContextAttempted)
+      return shift >= 0 ? iTime(m_symbol, m_timeframe, shift) : 0;
+   int index = RatesCount() - 1 - shift;
+   return (shift >= 0 && index >= 0 && index < RatesCount()) ? m_rates[index].time : 0;
   }
 
 //+------------------------------------------------------------------+
@@ -346,6 +398,52 @@ void CSmcBase::DetectPipSize()
       m_pipSize   = m_point * 10;
       m_pipDigits = MathMax(0, m_digits - 1);
      }
+  }
+
+//+------------------------------------------------------------------+
+//| Shared chronological input, or one terminal read for standalone use |
+//+------------------------------------------------------------------+
+void CSmcBase::SetRates(const MqlRates &rates[])
+  {
+   m_ratesContextAttempted = true;
+   ArrayFree(m_rates);
+   ArrayCopy(m_rates, rates);
+   ArraySetAsSeries(m_rates, false);
+   m_sharedRates = true;
+   m_ratesValid = ValidateRates();
+  }
+
+bool CSmcBase::PrepareRates(const int requested)
+  {
+   m_ratesContextAttempted = true;
+   if(m_sharedRates)
+      return m_ratesValid && RatesCount() >= 2;
+   ArrayFree(m_rates);
+   ArraySetAsSeries(m_rates, false);
+   int copied = CopyRates(m_symbol, m_timeframe, 0, MathMax(2, requested), m_rates);
+   m_ratesValid = copied >= 2 && ValidateRates();
+   return m_ratesValid;
+  }
+
+bool CSmcBase::ValidateRates() const
+  {
+   for(int i = 0; i < RatesCount(); i++)
+     {
+      if(m_rates[i].time <= 0 ||
+         (i > 0 && m_rates[i].time <= m_rates[i - 1].time) ||
+         !MathIsValidNumber(m_rates[i].open) || !MathIsValidNumber(m_rates[i].high) ||
+         !MathIsValidNumber(m_rates[i].low) || !MathIsValidNumber(m_rates[i].close) ||
+         m_rates[i].high < MathMax(m_rates[i].open, m_rates[i].close) ||
+         m_rates[i].low > MathMin(m_rates[i].open, m_rates[i].close))
+         return false;
+     }
+   return RatesCount() >= 2;
+  }
+
+void CSmcBase::SetModulePrefix(const string module)
+  {
+   m_prefix = "SMC_" + module + "_" + IntegerToString(ChartID()) + "_" +
+              m_instanceId + "_";
   }
 
 #endif // __SMC_BASE_MQH__
