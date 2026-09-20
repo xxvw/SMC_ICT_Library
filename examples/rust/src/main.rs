@@ -235,6 +235,9 @@ fn validate(snapshot: &Value) -> Result<()> {
     enumeration(root, "time_basis", "snapshot", &["broker"])?;
     enumeration(root, "status", "snapshot", STATUSES)?;
     timestamp(root, "as_of", "snapshot", true)?;
+    if root.contains_key("message") {
+        text(root, "message", "snapshot")?;
+    }
     validate_config(required(root, "config", "snapshot")?)?;
     for (index, value) in array(root, "modules", "snapshot")?.iter().enumerate() {
         let path = format!("snapshot.modules[{index}]");
@@ -283,6 +286,17 @@ fn validate(snapshot: &Value) -> Result<()> {
     Ok(())
 }
 
+// Rust formats the exact binary64 value with nearest, ties-to-even rounding.
+// Avoid multiplying by 1e8, which would introduce another rounding operation.
+fn format_price(value: f64) -> String {
+    let formatted = format!("{value:.8}");
+    if formatted == "-0.00000000" {
+        "0.00000000".to_owned()
+    } else {
+        formatted
+    }
+}
+
 fn render(snapshot: &Value, concept: Option<&str>, direction: Option<&str>) -> Result<String> {
     validate(snapshot)?;
     let root = snapshot.as_object().unwrap();
@@ -306,13 +320,13 @@ fn render(snapshot: &Value, concept: Option<&str>, direction: Option<&str>) -> R
     records.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
     for record in records {
         output.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{:.8}\t{:.8}\n",
+            "{}\t{}\t{}\t{}\t{}\t{}\n",
             record["id"].as_str().unwrap(),
             record["concept"].as_str().unwrap(),
             record["direction"].as_str().unwrap(),
             record["state"].as_str().unwrap(),
-            record["lower"].as_f64().unwrap(),
-            record["upper"].as_f64().unwrap()
+            format_price(record["lower"].as_f64().unwrap()),
+            format_price(record["upper"].as_f64().unwrap())
         ));
     }
     Ok(output)
@@ -383,6 +397,50 @@ mod tests {
                 "lower": 1.1, "upper": 1.2, "state": "ACTIVE", "active": true, "related_ids": [],
                 "period_start": null, "period_end": null, "reference_price": 0.0, "comparison_price": 0.0, "strength": 1.0, "reason": "" }]
         })
+    }
+
+    #[test]
+    fn rounds_exact_binary64_prices_to_eight_places_and_normalizes_zero() {
+        for (literal, expected) in [
+            ("0.001953125", "0.00195312"),
+            ("-0.001953125", "-0.00195312"),
+            ("0.005859375", "0.00585938"),
+            ("-0.005859375", "-0.00585938"),
+            ("1.000000005", "1.00000000"),
+            ("-1.000000005", "-1.00000000"),
+            ("1.0000000050000002", "1.00000001"),
+            ("-1.0000000050000002", "-1.00000001"),
+            ("0", "0.00000000"),
+            ("-0.0", "0.00000000"),
+            ("-0.000000001", "0.00000000"),
+            ("-1e-300", "0.00000000"),
+            ("-0.000000005", "-0.00000001"),
+        ] {
+            // Exercise JSON parsing and both output columns, not only the formatter.
+            let price: Value = serde_json::from_str(literal).unwrap();
+            let mut data = fixture();
+            data["records"][0]["lower"] = price.clone();
+            data["records"][0]["upper"] = price;
+            let output = render(&data, None, None).unwrap();
+            assert!(
+                output.ends_with(&format!("\t{expected}\t{expected}\n")),
+                "{literal}: {output}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_only_strings_for_optional_top_level_message() {
+        let mut data = fixture();
+        assert!(validate(&data).is_ok());
+        for value in [json!(""), json!("Waiting for history")] {
+            data["message"] = value;
+            assert!(validate(&data).is_ok());
+        }
+        for value in [Value::Null, json!(42), json!(false), json!([]), json!({})] {
+            data["message"] = value;
+            assert!(validate(&data).is_err());
+        }
     }
 
     #[test]
