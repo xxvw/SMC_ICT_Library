@@ -1,7 +1,6 @@
 //+------------------------------------------------------------------+
-//|                                                DataExporter.mqh  |
-//|                         SMC/ICT Concepts Library for MQL5        |
-//|                         Copyright 2025-2026, SMC_ICT_Library     |
+//| DataExporter.mqh - confirmed-bar CSV export                       |
+//| Copyright 2025-2026, SMC_ICT_Library                              |
 //+------------------------------------------------------------------+
 #property copyright "SMC_ICT_Library"
 #property version   "1.00"
@@ -10,367 +9,220 @@
 #ifndef __SMC_DATA_EXPORTER_MQH__
 #define __SMC_DATA_EXPORTER_MQH__
 
-#include "../Core/SmcTypes.mqh"
-
-//+------------------------------------------------------------------+
-//| CSmcDataExporter - Data export utility class                     |
-//|                                                                    |
-//| Export market data to CSV format:                                 |
-//|   - OHLCV data                                                    |
-//|   - OHLCV + Indicators (RSI, ATR, MA)                             |
-//|   - SMC-specific features for ML training                        |
-//|   - Multi-symbol batch export                                     |
-//+------------------------------------------------------------------+
+// All public entry points retain their historical signatures and CSV
+// columns. Rows are UTF-8, oldest first, and exclude the unfinished bar.
 class CSmcDataExporter
   {
 private:
-   //+------------------------------------------------------------------+
-   //| Write CSV header / CSVヘッダーを書き込み                         |
-   //+------------------------------------------------------------------+
-   static void WriteCSVHeader(int handle, const string &headers[])
+   static string FormatDatetime(const datetime value)
      {
-      string headerLine = "";
-      int count = ArraySize(headers);
-      for(int i = 0; i < count; i++)
-        {
-         if(i > 0)
-            headerLine += ",";
-         headerLine += headers[i];
-        }
-      FileWriteString(handle, headerLine + "\r\n");
+      MqlDateTime parts;
+      TimeToStruct(value, parts);
+      return StringFormat("%04d-%02d-%02d %02d:%02d:%02d",
+                          parts.year, parts.mon, parts.day,
+                          parts.hour, parts.min, parts.sec);
      }
 
-   //+------------------------------------------------------------------+
-   //| Write CSV row / CSV行を書き込み                                 |
-   //+------------------------------------------------------------------+
-   static void WriteCSVRow(int handle, const string &values[])
+   static bool WriteCSVRow(const int handle, const string &values[])
      {
       string row = "";
-      int count = ArraySize(values);
-      for(int i = 0; i < count; i++)
+      for(int i = 0; i < ArraySize(values); i++)
         {
          if(i > 0)
             row += ",";
          row += values[i];
         }
-      FileWriteString(handle, row + "\r\n");
+      row += "\r\n";
+      // Headers and formatted numbers are ASCII, hence bytes == characters.
+      return FileWriteString(handle, row) == (uint)StringLen(row);
      }
 
-   //+------------------------------------------------------------------+
-   //| Format datetime for CSV / CSV用に日時をフォーマット             |
-   //+------------------------------------------------------------------+
-   static string FormatDatetime(const datetime dt)
+   static bool LoadRates(const string symbol, const ENUM_TIMEFRAMES tf,
+                         const int bars, MqlRates &rates[])
      {
-      MqlDateTime mdt;
-      TimeToStruct(dt, mdt);
-      return StringFormat("%04d-%02d-%02d %02d:%02d:%02d",
-                         mdt.year, mdt.mon, mdt.day,
-                         mdt.hour, mdt.min, mdt.sec);
+      if(bars <= 0)
+         return false;
+      ArraySetAsSeries(rates, false);
+      if(CopyRates(symbol, tf, 1, bars, rates) != bars)
+         return false;
+      for(int i = 0; i < bars; i++)
+        {
+         if(rates[i].time <= 0 || (i > 0 && rates[i].time <= rates[i - 1].time) ||
+            !MathIsValidNumber(rates[i].open) || !MathIsValidNumber(rates[i].high) ||
+            !MathIsValidNumber(rates[i].low) || !MathIsValidNumber(rates[i].close) ||
+            rates[i].high < MathMax(rates[i].open, rates[i].close) ||
+            rates[i].low > MathMin(rates[i].open, rates[i].close) ||
+            rates[i].tick_volume < 0)
+            return false;
+        }
+      return true;
      }
 
-   //+------------------------------------------------------------------+
-   //| Format double value / double値をフォーマット                     |
-   //+------------------------------------------------------------------+
-   static string FormatDouble(const double value, const int digits = 5)
+   static bool CopyIndicator(const int handle, const MqlRates &rates[],
+                             double &values[])
      {
-      return DoubleToString(value, digits);
+      int count = ArraySize(rates);
+      ArraySetAsSeries(values, false);
+      // Time bounds keep indicators aligned if a new candle opens mid-export.
+      if(handle == INVALID_HANDLE ||
+         CopyBuffer(handle, 0, rates[0].time, rates[count - 1].time, values) != count)
+         return false;
+      for(int i = 0; i < count; i++)
+         if(values[i] == EMPTY_VALUE || !MathIsValidNumber(values[i]))
+            return false;
+      return true;
+     }
+
+   static bool LoadIndicators(const string symbol, const ENUM_TIMEFRAMES tf,
+                              const MqlRates &rates[], double &rsi[],
+                              double &atr[], double &ma[])
+     {
+      // SMA(20) needs nineteen predecessors for the first exported candle.
+      // Built-in indicators may return finite zero warmup values otherwise.
+      MqlRates warmup[];
+      if(CopyRates(symbol, tf, rates[0].time, 20, warmup) != 20)
+         return false;
+      int handles[3];
+      handles[0] = iRSI(symbol, tf, 14, PRICE_CLOSE);
+      handles[1] = iATR(symbol, tf, 14);
+      handles[2] = iMA(symbol, tf, 20, 0, MODE_SMA, PRICE_CLOSE);
+      bool ready = CopyIndicator(handles[0], rates, rsi) &&
+                   CopyIndicator(handles[1], rates, atr) &&
+                   CopyIndicator(handles[2], rates, ma);
+      // Release every successfully created handle even on partial creation.
+      for(int i = 0; i < 3; i++)
+         if(handles[i] != INVALID_HANDLE)
+            IndicatorRelease(handles[i]);
+      return ready;
+     }
+
+   static double AverageRange(const MqlRates &rates[], const int index,
+                               const int window)
+     {
+      int count = MathMin(window, index + 1);
+      double sum = 0.0;
+      for(int j = index - count + 1; j <= index; j++)
+         sum += rates[j].high - rates[j].low;
+      return sum / count;
+     }
+
+   // mode: 0 = OHLCV, 1 = indicators, 2 = candle features.
+   static bool Export(const string symbol, const ENUM_TIMEFRAMES tf,
+                       const int bars, const string filename, const int mode)
+     {
+      if(filename == "")
+         return false;
+      MqlRates rates[];
+      if(!LoadRates(symbol, tf, bars, rates))
+         return false;
+      double rsi[], atr[], ma[];
+      if(mode == 1 && !LoadIndicators(symbol, tf, rates, rsi, atr, ma))
+         return false;
+
+      string headers[];
+      string header = "datetime,open,high,low,close,volume";
+      if(mode == 1)
+         header += ",rsi,atr,ma20";
+      else if(mode == 2)
+         header += ",return,body_ratio,wick_upper_ratio,wick_lower_ratio,volatility,range_ratio";
+      StringSplit(header, ',', headers);
+
+      string temporary = filename + "." + IntegerToString(ChartID()) + "." +
+                         IntegerToString((long)GetMicrosecondCount()) + ".tmp";
+      int handle = FileOpen(temporary, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON,
+                            0, CP_UTF8);
+      if(handle == INVALID_HANDLE)
+         return false;
+      bool success = WriteCSVRow(handle, headers);
+      int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+      string values[];
+      ArrayResize(values, ArraySize(headers));
+      for(int i = 0; success && i < bars; i++)
+        {
+         values[0] = FormatDatetime(rates[i].time);
+         values[1] = DoubleToString(rates[i].open, digits);
+         values[2] = DoubleToString(rates[i].high, digits);
+         values[3] = DoubleToString(rates[i].low, digits);
+         values[4] = DoubleToString(rates[i].close, digits);
+         values[5] = IntegerToString(rates[i].tick_volume);
+         if(mode == 1)
+           {
+            values[6] = DoubleToString(rsi[i], 2);
+            values[7] = DoubleToString(atr[i], digits);
+            values[8] = DoubleToString(ma[i], digits);
+           }
+         else if(mode == 2)
+           {
+            double range = rates[i].high - rates[i].low;
+            double ret = 0.0;
+            if(i > 0 && rates[i - 1].close != 0.0)
+               ret = (rates[i].close - rates[i - 1].close) / rates[i - 1].close;
+            double body = MathAbs(rates[i].close - rates[i].open);
+            double upper = rates[i].high - MathMax(rates[i].open, rates[i].close);
+            double lower = MathMin(rates[i].open, rates[i].close) - rates[i].low;
+            double average = AverageRange(rates, i, 20);
+            values[6] = DoubleToString(ret, 6);
+            values[7] = DoubleToString(range > 0.0 ? body / range : 0.0, 4);
+            values[8] = DoubleToString(range > 0.0 ? upper / range : 0.0, 4);
+            values[9] = DoubleToString(range > 0.0 ? lower / range : 0.0, 4);
+            // Rolling windows include this candle and available prior candles.
+            values[10] = DoubleToString(AverageRange(rates, i, 14), digits);
+            values[11] = DoubleToString(average > 0.0 ? range / average : 1.0, 4);
+           }
+         success = WriteCSVRow(handle, values);
+        }
+      ResetLastError();
+      FileFlush(handle);
+      if(GetLastError() != 0)
+         success = false;
+      ResetLastError();
+      FileClose(handle);
+      if(GetLastError() != 0)
+         success = false;
+      if(success)
+         success = FileMove(temporary, FILE_COMMON, filename, FILE_COMMON | FILE_REWRITE);
+      if(!success)
+         FileDelete(temporary, FILE_COMMON);
+      return success;
      }
 
 public:
-   //+------------------------------------------------------------------+
-   //| Export OHLCV data to CSV / OHLCVデータをCSVにエクスポート       |
-   //+------------------------------------------------------------------+
-   static bool ExportOHLCV(const string symbol, const ENUM_TIMEFRAMES tf, 
+   static bool ExportOHLCV(const string symbol, const ENUM_TIMEFRAMES tf,
                            const int bars, const string filename)
      {
-      if(bars <= 0)
-         return false;
-      
-      int handle = FileOpen(filename, FILE_WRITE | FILE_CSV | FILE_COMMON, ',');
-      if(handle == INVALID_HANDLE)
-         return false;
-      
-      // Write header / ヘッダーを書き込み
-      string headers[];
-      ArrayResize(headers, 6);
-      headers[0] = "datetime";
-      headers[1] = "open";
-      headers[2] = "high";
-      headers[3] = "low";
-      headers[4] = "close";
-      headers[5] = "volume";
-      WriteCSVHeader(handle, headers);
-      
-      // Copy price arrays / 価格配列をコピー
-      double open[], high[], low[], close[], volume[];
-      datetime time[];
-      
-      int copied = CopyOpen(symbol, tf, 0, bars, open);
-      if(copied != bars)
-        {
-         FileClose(handle);
-         return false;
-        }
-      
-      CopyHigh(symbol, tf, 0, bars, high);
-      CopyLow(symbol, tf, 0, bars, low);
-      CopyClose(symbol, tf, 0, bars, close);
-      CopyTickVolume(symbol, tf, 0, bars, volume);
-      CopyTime(symbol, tf, 0, bars, time);
-      
-      // Write data rows / データ行を書き込み
-      string values[];
-      ArrayResize(values, 6);
-      
-      for(int i = bars - 1; i >= 0; i--) // Oldest first / 古い順
-        {
-         values[0] = FormatDatetime(time[i]);
-         values[1] = FormatDouble(open[i]);
-         values[2] = FormatDouble(high[i]);
-         values[3] = FormatDouble(low[i]);
-         values[4] = FormatDouble(close[i]);
-         values[5] = IntegerToString((long)volume[i]);
-         WriteCSVRow(handle, values);
-        }
-      
-      FileClose(handle);
-      return true;
+      return Export(symbol, tf, bars, filename, 0);
      }
 
-   //+------------------------------------------------------------------+
-   //| Export OHLCV with indicators / インジケーター付きOHLCVをエクスポート |
-   //+------------------------------------------------------------------+
    static bool ExportWithIndicators(const string symbol, const ENUM_TIMEFRAMES tf,
                                     const int bars, const string filename)
      {
-      if(bars <= 0)
-         return false;
-      
-      // Create indicators / インジケーターを作成
-      int rsiHandle = iRSI(symbol, tf, 14, PRICE_CLOSE);
-      int atrHandle = iATR(symbol, tf, 14);
-      int maHandle = iMA(symbol, tf, 20, 0, MODE_SMA, PRICE_CLOSE);
-      
-      if(rsiHandle == INVALID_HANDLE || atrHandle == INVALID_HANDLE || maHandle == INVALID_HANDLE)
-         return false;
-      
-      int handle = FileOpen(filename, FILE_WRITE | FILE_CSV | FILE_COMMON, ',');
-      if(handle == INVALID_HANDLE)
-        {
-         IndicatorRelease(rsiHandle);
-         IndicatorRelease(atrHandle);
-         IndicatorRelease(maHandle);
-         return false;
-        }
-      
-      // Write header / ヘッダーを書き込み
-      string headers[];
-      ArrayResize(headers, 9);
-      headers[0] = "datetime";
-      headers[1] = "open";
-      headers[2] = "high";
-      headers[3] = "low";
-      headers[4] = "close";
-      headers[5] = "volume";
-      headers[6] = "rsi";
-      headers[7] = "atr";
-      headers[8] = "ma20";
-      WriteCSVHeader(handle, headers);
-      
-      // Copy data / データをコピー
-      double open[], high[], low[], close[], volume[];
-      double rsi[], atr[], ma[];
-      datetime time[];
-      
-      int copied = CopyOpen(symbol, tf, 0, bars, open);
-      if(copied != bars)
-        {
-         FileClose(handle);
-         IndicatorRelease(rsiHandle);
-         IndicatorRelease(atrHandle);
-         IndicatorRelease(maHandle);
-         return false;
-        }
-      
-      CopyHigh(symbol, tf, 0, bars, high);
-      CopyLow(symbol, tf, 0, bars, low);
-      CopyClose(symbol, tf, 0, bars, close);
-      CopyTickVolume(symbol, tf, 0, bars, volume);
-      CopyTime(symbol, tf, 0, bars, time);
-      
-      CopyBuffer(rsiHandle, 0, 0, bars, rsi);
-      CopyBuffer(atrHandle, 0, 0, bars, atr);
-      CopyBuffer(maHandle, 0, 0, bars, ma);
-      
-      // Write data rows / データ行を書き込み
-      string values[];
-      ArrayResize(values, 9);
-      
-      for(int i = bars - 1; i >= 0; i--)
-        {
-         values[0] = FormatDatetime(time[i]);
-         values[1] = FormatDouble(open[i]);
-         values[2] = FormatDouble(high[i]);
-         values[3] = FormatDouble(low[i]);
-         values[4] = FormatDouble(close[i]);
-         values[5] = IntegerToString((long)volume[i]);
-         values[6] = FormatDouble(rsi[i], 2);
-         values[7] = FormatDouble(atr[i]);
-         values[8] = FormatDouble(ma[i]);
-         WriteCSVRow(handle, values);
-        }
-      
-      FileClose(handle);
-      IndicatorRelease(rsiHandle);
-      IndicatorRelease(atrHandle);
-      IndicatorRelease(maHandle);
-      return true;
+      return Export(symbol, tf, bars, filename, 1);
      }
 
-   //+------------------------------------------------------------------+
-   //| Export SMC-specific features for ML / ML用SMC特徴量をエクスポート |
-   //+------------------------------------------------------------------+
    static bool ExportSmcFeatures(const string symbol, const ENUM_TIMEFRAMES tf,
                                  const int bars, const string filename)
      {
-      if(bars <= 0)
-         return false;
-      
-      int handle = FileOpen(filename, FILE_WRITE | FILE_CSV | FILE_COMMON, ',');
-      if(handle == INVALID_HANDLE)
-         return false;
-      
-      // Write header / ヘッダーを書き込み
-      string headers[];
-      ArrayResize(headers, 12);
-      headers[0] = "datetime";
-      headers[1] = "open";
-      headers[2] = "high";
-      headers[3] = "low";
-      headers[4] = "close";
-      headers[5] = "volume";
-      headers[6] = "return";
-      headers[7] = "body_ratio";
-      headers[8] = "wick_upper_ratio";
-      headers[9] = "wick_lower_ratio";
-      headers[10] = "volatility";
-      headers[11] = "range_ratio";
-      WriteCSVHeader(handle, headers);
-      
-      // Copy price data / 価格データをコピー
-      double open[], high[], low[], close[], volume[];
-      datetime time[];
-      
-      int copied = CopyOpen(symbol, tf, 0, bars, open);
-      if(copied != bars)
-        {
-         FileClose(handle);
-         return false;
-        }
-      
-      CopyHigh(symbol, tf, 0, bars, high);
-      CopyLow(symbol, tf, 0, bars, low);
-      CopyClose(symbol, tf, 0, bars, close);
-      CopyTickVolume(symbol, tf, 0, bars, volume);
-      CopyTime(symbol, tf, 0, bars, time);
-      
-      // Calculate features / 特徴量を計算
-      string values[];
-      ArrayResize(values, 12);
-      
-      for(int i = bars - 1; i >= 0; i--)
-        {
-         // Basic OHLCV / 基本OHLCV
-         values[0] = FormatDatetime(time[i]);
-         values[1] = FormatDouble(open[i]);
-         values[2] = FormatDouble(high[i]);
-         values[3] = FormatDouble(low[i]);
-         values[4] = FormatDouble(close[i]);
-         values[5] = IntegerToString((long)volume[i]);
-         
-         // Return (close-to-close) / リターン（終値-終値）
-         double ret = 0.0;
-         if(i < bars - 1)
-            ret = (close[i] - close[i + 1]) / close[i + 1];
-         values[6] = FormatDouble(ret, 6);
-         
-         // Body ratio / ボディ比率
-         double bodySize = MathAbs(close[i] - open[i]);
-         double range = high[i] - low[i];
-         double bodyRatio = (range > 0) ? bodySize / range : 0.0;
-         values[7] = FormatDouble(bodyRatio, 4);
-         
-         // Upper wick ratio / 上ヒゲ比率
-         double upperWick = high[i] - MathMax(open[i], close[i]);
-         double upperWickRatio = (range > 0) ? upperWick / range : 0.0;
-         values[8] = FormatDouble(upperWickRatio, 4);
-         
-         // Lower wick ratio / 下ヒゲ比率
-         double lowerWick = MathMin(open[i], close[i]) - low[i];
-         double lowerWickRatio = (range > 0) ? lowerWick / range : 0.0;
-         values[9] = FormatDouble(lowerWickRatio, 4);
-         
-         // Volatility (ATR-like, using recent range) / ボラティリティ（ATR風、最近のレンジ使用）
-         double volatility = 0.0;
-         if(i < bars - 1)
-           {
-            double sumRange = 0.0;
-            int period = MathMin(14, bars - i - 1);
-            for(int j = 0; j < period; j++)
-               sumRange += (high[i + j] - low[i + j]);
-            volatility = (period > 0) ? sumRange / period : range;
-           }
-         else
-            volatility = range;
-         values[10] = FormatDouble(volatility, 5);
-         
-         // Range ratio (current range vs average) / レンジ比率（現在のレンジ vs 平均）
-         double rangeRatio = 1.0;
-         if(i < bars - 1)
-           {
-            double avgRange = 0.0;
-            int period = MathMin(20, bars - i - 1);
-            for(int j = 0; j < period; j++)
-               avgRange += (high[i + j] - low[i + j]);
-            avgRange = (period > 0) ? avgRange / period : range;
-            rangeRatio = (avgRange > 0) ? range / avgRange : 1.0;
-           }
-         values[11] = FormatDouble(rangeRatio, 4);
-         
-         WriteCSVRow(handle, values);
-        }
-      
-      FileClose(handle);
-      return true;
+      return Export(symbol, tf, bars, filename, 2);
      }
 
-   //+------------------------------------------------------------------+
-   //| Export multiple symbols / 複数シンボルをエクスポート               |
-   //+------------------------------------------------------------------+
    static bool ExportMultiSymbol(string &symbols[], const ENUM_TIMEFRAMES tf,
                                  const int bars, const string folder)
      {
-      int count = ArraySize(symbols);
-      if(count == 0)
+      if(ArraySize(symbols) == 0)
          return false;
-      
-      bool allSuccess = true;
-      
-      for(int i = 0; i < count; i++)
+      bool success = true;
+      for(int i = 0; i < ArraySize(symbols); i++)
         {
-         string filename = folder + "\\" + symbols[i] + "_" + 
-                          IntegerToString(tf) + "_OHLCV.csv";
-         
+         string filename = folder + "\\" + symbols[i] + "_" +
+                           IntegerToString(tf) + "_OHLCV.csv";
          if(!ExportOHLCV(symbols[i], tf, bars, filename))
            {
-            allSuccess = false;
+            success = false;
             Print("Failed to export: ", symbols[i]);
            }
         }
-      
-      return allSuccess;
+      return success;
      }
   };
 
 #endif // __SMC_DATA_EXPORTER_MQH__
-//+------------------------------------------------------------------+
