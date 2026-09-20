@@ -42,6 +42,8 @@ private:
    //--- 結果
    SmcCurrencyInfo   m_info[CS_CURRENCY_COUNT];
    double            m_prevStrength[CS_CURRENCY_COUNT]; // 前回の強弱値
+   bool              m_hasResult;
+   datetime          m_resultTime;
 
 public:
                      CSmcCurrencyStrength();
@@ -55,8 +57,10 @@ public:
    virtual void      Clean();
 
    //--- 設定変更
-   void              SetMethod(const ENUM_CS_METHOD method) { m_method = method; }
-   void              SetPeriod(const int period) { m_period = MathMax(1, period); }
+   void              SetMethod(const ENUM_CS_METHOD method)
+     { if(m_method != method) { m_method = method; ClearResults(); } }
+   void              SetPeriod(const int period)
+     { if(m_period != MathMax(1, period)) { m_period = MathMax(1, period); ClearResults(); } }
 
    //--- 強弱取得
    double            GetStrength(const string currency) const;
@@ -76,9 +80,12 @@ public:
 private:
    void              InitCurrencies();
    void              InitPairs();
+   void              ClearResults();
    string            FindBrokerSymbol(const string pair) const;
-   void              CalcByRateChange();
-   void              CalcByRSI();
+   bool              ReadPairRates(const int pair, const datetime anchor, MqlRates &rates[]) const;
+   void              AddContribution(const int pair, const double value, int &coverage[]);
+   void              CalcByRateChange(const datetime anchor, int &coverage[]);
+   void              CalcByRSI(const datetime anchor, int &coverage[]);
    void              NormalizeStrengths();
    void              CalcMomentum();
    void              CalcRanks();
@@ -90,12 +97,29 @@ CSmcCurrencyStrength::CSmcCurrencyStrength()
    : m_method(CS_METHOD_RATE_CHANGE)
    , m_period(10)
    , m_calcTF(PERIOD_M5)
+   , m_hasResult(false)
+   , m_resultTime(0)
   {
    InitCurrencies();
    ArrayInitialize(m_prevStrength, 0);
   }
 
 CSmcCurrencyStrength::~CSmcCurrencyStrength() {}
+
+// No valid ranking is published until every currency has at least one
+// usable closed pair contribution. Missing broker pairs are permitted;
+// a currency without coverage invalidates the whole relative ranking.
+void CSmcCurrencyStrength::ClearResults()
+  {
+   m_hasResult = false;
+   m_resultTime = 0;
+   ArrayInitialize(m_prevStrength, 0);
+   for(int i = 0; i < CS_CURRENCY_COUNT; i++)
+     {
+      m_info[i].Init();
+      m_info[i].name = m_currencies[i];
+     }
+  }
 
 //+------------------------------------------------------------------+
 void CSmcCurrencyStrength::InitCurrencies()
@@ -137,22 +161,42 @@ void CSmcCurrencyStrength::InitPairs()
 //+------------------------------------------------------------------+
 string CSmcCurrencyStrength::FindBrokerSymbol(const string pair) const
   {
-//--- 様々なブローカーの命名規則を試行
+// Prefer the host FX symbol's suffix, including custom/offline symbols.
+// Existence and selection are separate from data readiness: a zero BID
+// must not prevent an otherwise usable historical symbol from being read.
    string suffixes[] = {"", "m", ".ecn", ".pro", ".raw", ".", "_", ".i", "pro", ".std"};
+   string reverse = StringSubstr(pair, 3, 3) + StringSubstr(pair, 0, 3);
+   bool custom = false;
+   if(StringLen(m_symbol) >= 6 &&
+      FindCurrencyIndex(StringSubstr(m_symbol, 0, 3)) >= 0 &&
+      FindCurrencyIndex(StringSubstr(m_symbol, 3, 3)) >= 0)
+     {
+      bool customHost = false;
+      SymbolExist(m_symbol, customHost);
+      string suffix = StringSubstr(m_symbol, 6);
+      string preferred = pair + suffix;
+      if(SymbolExist(preferred, custom) && SymbolSelect(preferred, true))
+         return preferred;
+      preferred = reverse + suffix;
+      if(SymbolExist(preferred, custom) && SymbolSelect(preferred, true))
+         return preferred;
+      // A custom feed is an isolated universe; do not silently mix it with
+      // unrelated live broker pairs when one custom cross is unavailable.
+      if(customHost)
+         return "";
+     }
 
+// Try the conventional direct and reversed broker names if needed.
    for(int i = 0; i < ArraySize(suffixes); i++)
      {
       string testSymbol = pair + suffixes[i];
-      if(SymbolInfoDouble(testSymbol, SYMBOL_BID) > 0)
+      if(SymbolExist(testSymbol, custom) && SymbolSelect(testSymbol, true))
          return testSymbol;
      }
-
-//--- 逆ペアも試行
-   string reverse = StringSubstr(pair, 3, 3) + StringSubstr(pair, 0, 3);
    for(int i = 0; i < ArraySize(suffixes); i++)
      {
       string testSymbol = reverse + suffixes[i];
-      if(SymbolInfoDouble(testSymbol, SYMBOL_BID) > 0)
+      if(SymbolExist(testSymbol, custom) && SymbolSelect(testSymbol, true))
          return testSymbol;
      }
 
@@ -164,13 +208,14 @@ bool CSmcCurrencyStrength::Init(const string symbol, const ENUM_TIMEFRAMES timef
                                 const bool enableDraw, const ENUM_CS_METHOD method,
                                 const int period)
   {
+   ClearResults();
    if(!CSmcBase::Init(symbol, timeframe, enableDraw))
       return false;
 
-   m_prefix = "SMC_CS_";
+   SetModulePrefix("CS");
    m_method = method;
    m_period = MathMax(1, period);
-   m_calcTF = timeframe;
+   m_calcTF = m_timeframe;
 
    InitPairs();
    return true;
@@ -179,86 +224,137 @@ bool CSmcCurrencyStrength::Init(const string symbol, const ENUM_TIMEFRAMES timef
 //+------------------------------------------------------------------+
 bool CSmcCurrencyStrength::Update()
   {
-   if(!m_initialized)
+   if(!m_initialized || m_period >= 2147483647 || !PrepareRates(2))
+     {
+      ClearResults();
       return false;
+     }
 
-//--- 前回値を保存
-   for(int i = 0; i < CS_CURRENCY_COUNT; i++)
-      m_prevStrength[i] = m_info[i].strength;
+   datetime anchor = Time(1);
+   if(anchor <= 0 || Time(0) <= anchor)
+     {
+      ClearResults();
+      return false;
+     }
+
+   // Repeated updates of one closed bar keep the same momentum baseline.
+   // The first usable observation (including recovery) has zero momentum.
+   bool firstResult = !m_hasResult || anchor < m_resultTime;
+   if(!firstResult && anchor > m_resultTime)
+      for(int i = 0; i < CS_CURRENCY_COUNT; i++)
+         m_prevStrength[i] = m_info[i].strength;
 
 //--- 強弱値リセット
    for(int i = 0; i < CS_CURRENCY_COUNT; i++)
       m_info[i].strength = 0;
 
-//--- 計算
+   int coverage[CS_CURRENCY_COUNT];
+   ArrayInitialize(coverage, 0);
+   // Rediscover symbols so symbols added after Init can become ready.
+   InitPairs();
    switch(m_method)
      {
       case CS_METHOD_RATE_CHANGE:
-         CalcByRateChange();
+         CalcByRateChange(anchor, coverage);
          break;
       case CS_METHOD_RSI:
-         CalcByRSI();
+         CalcByRSI(anchor, coverage);
          break;
       default:
-         CalcByRateChange();
+         CalcByRateChange(anchor, coverage);
          break;
      }
 
+   for(int i = 0; i < CS_CURRENCY_COUNT; i++)
+      if(coverage[i] == 0 || !MathIsValidNumber(m_info[i].strength))
+        {
+         ClearResults();
+         return false;
+        }
+
    NormalizeStrengths();
+   if(firstResult)
+      for(int i = 0; i < CS_CURRENCY_COUNT; i++)
+         m_prevStrength[i] = m_info[i].strength;
    CalcMomentum();
    CalcRanks();
-
+   m_hasResult = true;
+   m_resultTime = anchor;
    return true;
   }
 
 void CSmcCurrencyStrength::Clean()
   {
-   CSmcDrawing::DeleteObjectsByPrefix(m_prefix);
-   CSmcDrawing::Redraw();
+   CSmcBase::Clean();
   }
 
 //+------------------------------------------------------------------+
 //| 価格変化率ベースの計算                                             |
 //+------------------------------------------------------------------+
-void CSmcCurrencyStrength::CalcByRateChange()
+bool CSmcCurrencyStrength::ReadPairRates(const int pair, const datetime anchor,
+                                        MqlRates &rates[]) const
+  {
+   ArrayFree(rates);
+   ArraySetAsSeries(rates, false);
+   if(!m_pairAvailable[pair])
+      return false;
+
+   // CopyRates starts history loading if needed. Exact anchoring prevents
+   // a missing pair candle from substituting an older bar.
+   int requested = m_period + 1;
+   if(CopyRates(m_pairSymbol[pair], m_calcTF, anchor, requested, rates) != requested ||
+      ArraySize(rates) != requested || rates[requested - 1].time != anchor)
+      return false;
+   // Shift >= 1 excludes that symbol's own unfinished candle.
+   if(iBarShift(m_pairSymbol[pair], m_calcTF, anchor, true) < 1)
+      return false;
+   for(int i = 0; i < requested; i++)
+     {
+      if(rates[i].time <= 0 || (i > 0 && rates[i].time <= rates[i - 1].time) ||
+         !MathIsValidNumber(rates[i].open) || !MathIsValidNumber(rates[i].high) ||
+         !MathIsValidNumber(rates[i].low) || !MathIsValidNumber(rates[i].close) ||
+         rates[i].open <= 0 || rates[i].high <= 0 || rates[i].low <= 0 || rates[i].close <= 0 ||
+         rates[i].high < MathMax(rates[i].open, rates[i].close) ||
+         rates[i].low > MathMin(rates[i].open, rates[i].close))
+         return false;
+     }
+   return true;
+  }
+
+void CSmcCurrencyStrength::AddContribution(const int pair, const double value, int &coverage[])
+  {
+   if(!MathIsValidNumber(value))
+      return;
+   double oriented = value;
+   if(StringSubstr(m_pairSymbol[pair], 0, 3) != m_currencies[m_pairBase[pair]])
+      oriented = -value;
+   m_info[m_pairBase[pair]].strength += oriented;
+   m_info[m_pairQuote[pair]].strength -= oriented;
+   coverage[m_pairBase[pair]]++;
+   coverage[m_pairQuote[pair]]++;
+  }
+
+void CSmcCurrencyStrength::CalcByRateChange(const datetime anchor, int &coverage[])
   {
    for(int p = 0; p < CS_PAIR_COUNT; p++)
      {
-      if(!m_pairAvailable[p])
+      MqlRates rates[];
+      if(!ReadPairRates(p, anchor, rates))
          continue;
-
-      double close0 = iClose(m_pairSymbol[p], m_calcTF, 0);
-      double closeN = iClose(m_pairSymbol[p], m_calcTF, m_period);
-
-      if(close0 == 0 || closeN == 0)
-         continue;
-
-      double change = ((close0 - closeN) / closeN) * 100.0;
-
-      //--- ベース通貨に加算、クォート通貨から減算
-      //--- ペアが逆の場合（ブローカーシンボル名で判定）
-      string actualBase = StringSubstr(m_pairSymbol[p], 0, 3);
-      if(actualBase == m_currencies[m_pairBase[p]])
-        {
-         m_info[m_pairBase[p]].strength  += change;
-         m_info[m_pairQuote[p]].strength -= change;
-        }
-      else
-        {
-         m_info[m_pairBase[p]].strength  -= change;
-         m_info[m_pairQuote[p]].strength += change;
-        }
+      double change = ((rates[m_period].close - rates[0].close) / rates[0].close) * 100.0;
+      AddContribution(p, change, coverage);
      }
   }
 
 //+------------------------------------------------------------------+
 //| RSIベースの計算                                                    |
 //+------------------------------------------------------------------+
-void CSmcCurrencyStrength::CalcByRSI()
+void CSmcCurrencyStrength::CalcByRSI(const datetime anchor, int &coverage[])
   {
    for(int p = 0; p < CS_PAIR_COUNT; p++)
      {
-      if(!m_pairAvailable[p])
+      MqlRates rates[];
+      if(!ReadPairRates(p, anchor, rates))
          continue;
 
       int handle = iRSI(m_pairSymbol[p], m_calcTF, m_period, PRICE_CLOSE);
@@ -266,14 +362,12 @@ void CSmcCurrencyStrength::CalcByRSI()
          continue;
 
       double rsi[];
-      ArraySetAsSeries(rsi, true);
-      if(CopyBuffer(handle, 0, 0, 1, rsi) > 0)
-        {
-         double rsiVal = rsi[0] - 50.0;  // 中心を0に
-         m_info[m_pairBase[p]].strength  += rsiVal;
-         m_info[m_pairQuote[p]].strength -= rsiVal;
-        }
+      int copied = CopyBuffer(handle, 0, anchor, 1, rsi);
       IndicatorRelease(handle);
+      if(copied != 1 || ArraySize(rsi) != 1 ||
+         !MathIsValidNumber(rsi[0]) || rsi[0] == EMPTY_VALUE || rsi[0] < 0 || rsi[0] > 100)
+         continue;
+      AddContribution(p, rsi[0] - 50.0, coverage);
      }
   }
 
@@ -346,8 +440,9 @@ int CSmcCurrencyStrength::GetRank(const string currency) const
 
 bool CSmcCurrencyStrength::GetCurrencyInfo(const string currency, SmcCurrencyInfo &info) const
   {
+   info.Init();
    int idx = FindCurrencyIndex(currency);
-   if(idx < 0) return false;
+   if(idx < 0 || !m_hasResult) return false;
    info = m_info[idx];
    return true;
   }
@@ -373,7 +468,19 @@ string CSmcCurrencyStrength::GetBestPair() const
 
 void CSmcCurrencyStrength::GetSortedCurrencies(string &sorted[]) const
   {
-   ArrayResize(sorted, CS_CURRENCY_COUNT);
+   // Never free a caller's fixed-size string array. Clear stale names in
+   // place; only dynamic arrays can represent an unavailable empty result.
+   for(int i = 0; i < ArraySize(sorted); i++)
+      sorted[i] = "";
+   bool dynamic = ArrayIsDynamic(sorted);
+   if(dynamic)
+      ArrayResize(sorted, 0);
+   if(!m_hasResult)
+      return;
+   if(dynamic && ArrayResize(sorted, CS_CURRENCY_COUNT) != CS_CURRENCY_COUNT)
+      return;
+   if(ArraySize(sorted) < CS_CURRENCY_COUNT)
+      return;
    for(int rank = 1; rank <= CS_CURRENCY_COUNT; rank++)
       for(int i = 0; i < CS_CURRENCY_COUNT; i++)
          if(m_info[i].rank == rank)
