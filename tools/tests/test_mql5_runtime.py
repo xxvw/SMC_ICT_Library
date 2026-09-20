@@ -67,7 +67,7 @@ class RuntimeEvidenceTests(unittest.TestCase):
                 runtime.verify_report(self.report, "current", 0)
 
     def test_default_discovery_contains_all_nested_mql5_tests(self):
-        tests = self.root / "Tests"
+        tests = self.root / "tests"
         (tests / "nested").mkdir(parents=True)
         (tests / "SmokeTest.mq5").touch()
         (tests / "nested/TestCustom.mq5").touch()
@@ -78,10 +78,10 @@ class RuntimeEvidenceTests(unittest.TestCase):
                 runtime.collect_tests(["../outside.mq5"])
 
     def test_partial_failure_never_publishes_artifact_manifest(self):
-        for folder in ("Include", "Tests", "standard-includes"):
+        for folder in ("Include", "tests", "standard-includes"):
             (self.root / folder).mkdir()
         for name in ("First.mq5", "Second.mq5"):
-            (self.root / "Tests" / name).touch()
+            (self.root / "tests" / name).touch()
         compiler = Mock(includes=self.root / "standard-includes")
         with patch.object(runtime, "ROOT", self.root), \
              patch.object(runtime, "discover_compiler", return_value=compiler), \

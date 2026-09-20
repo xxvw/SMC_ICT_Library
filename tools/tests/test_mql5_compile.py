@@ -10,6 +10,8 @@ import time
 import unittest
 from unittest.mock import patch
 
+from tools import check_mql5_static
+
 from tools.check_mql5_compile import (
     Compiler,
     collect_sources,
@@ -116,12 +118,29 @@ class SourceDiscoveryTests(unittest.TestCase):
     def test_default_includes_all_entrypoints_and_nested_tests(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            expected = [Path("Experts/EA.mq5"), Path("Indicators/View.mq5"), Path("Scripts/Export.mq5"), Path("Tests/nested/Suite.mq5")]
+            expected = [Path("Experts/EA.mq5"), Path("Indicators/View.mq5"), Path("Scripts/Export.mq5"), Path("tests/nested/Suite.mq5")]
             for path in expected:
                 (root / path).parent.mkdir(parents=True, exist_ok=True)
                 (root / path).touch()
             self.assertEqual(collect_sources(root, []), expected)
-            self.assertEqual(collect_sources(root, ["Tests/nested/Suite.mq5"]), [expected[-1]])
+            self.assertEqual(collect_sources(root, ["tests/nested/Suite.mq5"]), [expected[-1]])
+
+    def test_static_checks_include_runtime_fixtures_and_local_headers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tests = root / "tests"
+            (tests / "nested").mkdir(parents=True)
+            (tests / "fixtures").mkdir()
+            entry = tests / "nested/Fixture.mq5"
+            entry.write_text('#include "../TestHarness.mqh"\nvoid OnStart() {}\n', encoding="utf-8")
+            header = tests / "TestHarness.mqh"
+            header.write_text("// shared test harness\n", encoding="utf-8")
+            (tests / "fixtures/snapshot.json").write_text("{}", encoding="utf-8")
+            with patch.object(check_mql5_static, "ROOT", root):
+                self.assertEqual(check_mql5_static.iter_sources(), [header, entry])
+                self.assertEqual(check_mql5_static.check_file(entry), [])
+                header.unlink()
+                self.assertTrue(any("unresolved include" in error for error in check_mql5_static.check_file(entry)))
 
     def test_selected_source_must_be_an_existing_repository_entrypoint(self):
         with tempfile.TemporaryDirectory() as directory:

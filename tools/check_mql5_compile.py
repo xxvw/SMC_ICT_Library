@@ -20,7 +20,7 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_DIRS = ("Experts", "Indicators", "Scripts", "Tests")
+SOURCE_DIRS = ("Experts", "Indicators", "Scripts", "tests")
 SUMMARY = re.compile(r"(?:Result:\s*)?(\d+)\s+errors?,\s*(\d+)\s+warnings?", re.I)
 MAC_WINE = Path("/Applications/MetaTrader 5.app/Contents/SharedSupport/wine/bin/wine")
 MAC_PREFIX = Path.home() / "Library/Application Support/net.metaquotes.wine.metatrader5"
