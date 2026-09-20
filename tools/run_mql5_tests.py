@@ -13,7 +13,9 @@ Startup format: https://www.metatrader5.com/en/terminal/help/start_advanced/star
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -27,6 +29,29 @@ from check_mql5_compile import Compiler, compile_source, decode_log, discover_co
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT_NAME = "smc-test-report.json"
+SNAPSHOT_NAME = "snapshot-fixture.json"
+
+
+def strict_json(text: str):
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"Duplicate JSON property: {key}")
+            result[key] = value
+        return result
+
+    def reject_constant(value):
+        raise ValueError(f"Non-finite JSON number: {value}")
+
+    def finite_float(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError(f"Non-finite JSON number: {value}")
+        return number
+
+    return json.loads(text, object_pairs_hook=unique_object, parse_constant=reject_constant,
+                      parse_float=finite_float)
 
 
 def discover_runtime(compiler: Compiler) -> tuple[Path, Path]:
@@ -44,7 +69,7 @@ def collect_tests(selected: list[str]) -> list[Path]:
     tests = []
     for source in sources:
         try:
-            relative = source.resolve().relative_to(ROOT / "Tests")
+            relative = source.resolve().relative_to((ROOT / "Tests").resolve())
         except ValueError as exc:
             raise RuntimeError(f"Tests must be inside Tests/: {source}") from exc
         if not source.is_file() or source.suffix.lower() != ".mq5":
@@ -59,7 +84,7 @@ def verify_report(path: Path, run_id: str, started: float) -> dict:
     if not path.is_file() or path.stat().st_mtime < started:
         raise RuntimeError("Runtime test did not produce a fresh report.")
     try:
-        result = json.loads(path.read_text(encoding="utf-8-sig"))
+        result = strict_json(path.read_text(encoding="utf-8-sig"))
     except (ValueError, UnicodeError) as exc:
         raise RuntimeError(f"Malformed MQL5 test report: {exc}") from exc
     if not isinstance(result, dict) or result.get("run_id") != run_id:
@@ -77,6 +102,49 @@ def verify_report(path: Path, run_id: str, started: float) -> dict:
     return result
 
 
+def verify_snapshot_fixture(path: Path, schema_path: Path, started: float) -> bytes:
+    """Validate the exact UTF-8 bytes emitted by the real MQL5 exporter."""
+    if not path.is_file() or path.stat().st_mtime < started:
+        raise RuntimeError("Snapshot export test did not produce a fresh snapshot fixture.")
+    data = path.read_bytes()
+    if data.startswith(b"\xef\xbb\xbf") or b"\x00" in data:
+        raise RuntimeError("Snapshot fixture must be UTF-8 without BOM or NUL bytes.")
+    try:
+        snapshot = strict_json(data.decode("utf-8"))
+    except (ValueError, UnicodeError) as exc:
+        raise RuntimeError(f"Malformed snapshot fixture: {exc}") from exc
+    if not schema_path.is_file():
+        raise RuntimeError(f"Snapshot JSON Schema is required for snapshot_export: {schema_path}")
+    try:
+        import jsonschema
+    except ImportError as exc:
+        raise RuntimeError("jsonschema is required for snapshot_export; use the project's development Python environment.") from exc
+    try:
+        schema = strict_json(schema_path.read_text(encoding="utf-8"))
+        jsonschema.Draft202012Validator.check_schema(schema)
+        jsonschema.Draft202012Validator(schema).validate(snapshot)
+    except (ValueError, UnicodeError, jsonschema.exceptions.SchemaError,
+            jsonschema.exceptions.ValidationError) as exc:
+        raise RuntimeError(f"Snapshot fixture failed JSON Schema validation: {exc}") from exc
+    return data
+
+
+def preserve_artifacts(stage: Path, result: dict, destination: Path,
+                       snapshot: bytes | None) -> dict:
+    """Preserve only verified artifacts, under a non-overwriting run UUID."""
+    folder = destination / result["run_id"]
+    folder.mkdir(parents=True, exist_ok=False)
+    report = folder / REPORT_NAME
+    shutil.copyfile(stage / "MQL5/Files" / REPORT_NAME, report)
+    artifacts = {"report": str(report.relative_to(destination))}
+    if snapshot is not None:
+        fixture = folder / SNAPSHOT_NAME
+        fixture.write_bytes(snapshot)
+        artifacts["snapshot"] = str(fixture.relative_to(destination))
+        artifacts["snapshot_sha256"] = hashlib.sha256(snapshot).hexdigest()
+    return artifacts
+
+
 def runtime_diagnostics(terminal: Path) -> str:
     chunks = []
     for folder in (terminal / "logs", terminal / "MQL5/logs"):
@@ -89,7 +157,8 @@ def runtime_diagnostics(terminal: Path) -> str:
 
 
 def run_test(compiler: Compiler, executable: Path, symbols: Path,
-             binary: Path, stage: Path, timeout: int) -> dict:
+             binary: Path, stage: Path, timeout: int,
+             artifacts: Path | None = None) -> dict:
     """Run exactly one fresh binary with a unique report in its own terminal."""
     stage.mkdir()
     terminal = stage / "terminal64.exe"
@@ -142,7 +211,14 @@ def run_test(compiler: Compiler, executable: Path, symbols: Path,
     # Wine/MT5 can return 1 after a successful TerminalClose(0). Require the
     # fresh, complete assertion report rather than interpreting the exit code.
     try:
-        return verify_report(stage / "MQL5/Files" / REPORT_NAME, run_id, started)
+        result = verify_report(stage / "MQL5/Files" / REPORT_NAME, run_id, started)
+        snapshot = None
+        if result["suite"] == "snapshot_export":
+            snapshot = verify_snapshot_fixture(stage / "MQL5/Files" / SNAPSHOT_NAME,
+                                               ROOT / "schemas/snapshot.schema.json", started)
+        if artifacts is not None:
+            result["artifacts"] = preserve_artifacts(stage, result, artifacts, snapshot)
+        return result
     except RuntimeError as exc:
         raise RuntimeError(f"{exc}\nTerminal exit status: {process.returncode}\n{runtime_diagnostics(stage)}") from exc
 
@@ -151,6 +227,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--source", action="append", default=[], help="Run only this repository-relative Tests/*.mq5 file (repeatable).")
     parser.add_argument("--timeout", type=int, default=120, help="Maximum seconds per compilation or runtime execution (default: 120).")
+    parser.add_argument("--artifacts", type=Path, help="Preserve verified reports and MT5 snapshot bytes in a unique run directory here. A manifest is published only if every selected test passes.")
     args = parser.parse_args(argv)
     try:
         if args.timeout <= 0:
@@ -158,6 +235,11 @@ def main(argv: list[str] | None = None) -> int:
         tests = collect_tests(args.source)
         compiler = discover_compiler()
         executable, symbols = discover_runtime(compiler)
+        artifacts = None
+        if args.artifacts is not None:
+            artifacts = args.artifacts.expanduser().resolve() / ("run-" + uuid.uuid4().hex)
+            artifacts.mkdir(parents=True, exist_ok=False)
+        results = []
         with tempfile.TemporaryDirectory(prefix="smc-mql5-runtime-") as directory:
             stage = Path(directory)
             shutil.copytree(compiler.includes, stage / "Include")
@@ -169,13 +251,18 @@ def main(argv: list[str] | None = None) -> int:
                     source = stage / "Tests" / relative
                     compile_source(compiler, source, stage, args.timeout)
                     result = run_test(compiler, executable, symbols, source.with_suffix(".ex5"),
-                                      stage / f"runtime-{index}", args.timeout)
+                                      stage / f"runtime-{index}", args.timeout, artifacts)
+                    results.append({"source": f"Tests/{relative}", **result})
                     print(f"PASS Tests/{relative}: {result['assertions']} MQL5 assertions", flush=True)
                 except (RuntimeError, OSError) as exc:
                     failures.append(relative)
                     print(f"FAIL Tests/{relative}: {exc}", file=sys.stderr, flush=True)
             if failures:
                 return 1
+        if artifacts is not None:
+            manifest = artifacts / "manifest.json"
+            manifest.write_text(json.dumps({"tests": results}, indent=2) + "\n", encoding="utf-8")
+            print(f"Runtime artifacts: {manifest}")
         print(f"MQL5 runtime tests passed for {len(tests)} fixture(s).")
         return 0
     except (RuntimeError, OSError) as exc:
