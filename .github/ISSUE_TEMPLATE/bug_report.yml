@@ -1,0 +1,48 @@
+name: Bug report
+description: Report a reproducible problem with detection, builds, exports, or examples.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use synthetic or public fixtures. Remove passwords, tokens, account numbers, and private broker data from logs and screenshots.
+        For vulnerabilities, use the [security reporting policy](https://github.com/xxvw/SMC_ICT_Library/blob/main/SECURITY.md) instead of a public issue.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and observed behavior
+      description: Describe what should happen and what actually happens.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Version and environment
+      description: Include the commit SHA or release, operating system, MT5/MetaEditor build, and relevant language runtime version.
+      placeholder: |
+        Commit or release:
+        OS:
+        MT5/MetaEditor build:
+        Language and runtime (if applicable):
+    validations:
+      required: true
+  - type: textarea
+    id: configuration
+    attributes:
+      label: Reproduction configuration
+      description: Include the affected module, symbol, timeframe, broker time basis, and relevant settings. Do not include account details.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps and fixture
+      description: Supply minimal steps or code, the data/fixture version or checksum, and expected output. State if no fixture is needed.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Local validation and logs
+      description: Include the validation command, its result, and relevant sanitized compiler or runtime output.
+      render: text

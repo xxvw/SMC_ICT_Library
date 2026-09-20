@@ -1,0 +1,40 @@
+name: Feature request
+description: Propose a focused library, interoperability, or documentation improvement.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: Keep requests focused on one use case. Use public or synthetic examples and omit credentials, account numbers, and private data.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Use case and current limitation
+      description: Explain the task you are trying to complete and who benefits.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the interface or detection rule, including time basis and confirmation rules when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Environment and example configuration
+      description: Include the current commit or release, MT5/MetaEditor build or runtime, and relevant symbol, timeframe, and settings. Mark fields not applicable when appropriate.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Example and acceptance criteria
+      description: Provide a minimal public or synthetic example and expected result. Identify a data/fixture version or checksum if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe workarounds and compatibility considerations.
