@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/xxvw/SMC_ICT_Library/blob/main/schemas/snapshot.schema.json",
+  "title": "SMC/ICT snapshot, version 1",
+  "description": "Closed-bar detection snapshot. Timestamps are broker-local wall-clock times, without a UTC suffix or offset. Unknown properties are permitted for additive version 1 extensions.",
+  "type": "object",
+  "required": ["schema_version", "library_version", "symbol", "timeframe", "time_basis", "as_of", "status", "config", "modules", "records"],
+  "properties": {
+    "schema_version": {"type": "string", "pattern": "^1\\.[0-9]+$"},
+    "library_version": {"type": "string", "minLength": 1},
+    "symbol": {"type": "string", "minLength": 1},
+    "timeframe": {"type": "string", "minLength": 1},
+    "time_basis": {"const": "broker"},
+    "as_of": {"$ref": "#/$defs/nullableTimestamp"},
+    "status": {"$ref": "#/$defs/status"},
+    "message": {"type": "string"},
+    "config": {"$ref": "#/$defs/config"},
+    "modules": {"type": "array", "items": {"$ref": "#/$defs/module"}},
+    "records": {"type": "array", "items": {"$ref": "#/$defs/record"}}
+  },
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$"
+    },
+    "nullableTimestamp": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+    "status": {"type": "string", "enum": ["READY", "PARTIAL", "NOT_READY", "ERROR", "DISABLED"]},
+    "concept": {
+      "type": "string",
+      "enum": ["SWING_HIGH", "SWING_LOW", "BOS", "CHOCH", "ORDER_BLOCK", "FVG", "LIQUIDITY", "PREMIUM_DISCOUNT", "OTE", "KILL_ZONE", "BREAKER", "DISPLACEMENT", "MSS", "IFVG", "BPR", "PREVIOUS_DAY_HIGH", "PREVIOUS_DAY_LOW", "PREVIOUS_WEEK_HIGH", "PREVIOUS_WEEK_LOW", "SESSION_HIGH", "SESSION_LOW", "DAILY_GAP", "WEEKLY_GAP", "SMT", "PO3"]
+    },
+    "session": {
+      "type": "object",
+      "required": ["name", "start_minute", "end_minute"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "start_minute": {"type": "integer", "minimum": 0, "maximum": 1439},
+        "end_minute": {"type": "integer", "minimum": 0, "maximum": 1439}
+      }
+    },
+    "config": {
+      "type": "object",
+      "required": ["lookback_bars", "max_records_per_concept", "swing_strength", "displacement_baseline", "displacement_multiplier", "displacement_body_fraction", "min_fvg_pips", "max_zone_age", "bpr_max_separation", "po3_expiry_bars", "smt_symbol", "smt_radius", "enable_draw", "enable_calendar", "enable_smt", "enable_po3", "enable_displacement", "enable_mss", "enable_ifvg", "enable_bpr", "enable_cs", "enable_vix", "sessions"],
+      "properties": {
+        "lookback_bars": {"type": "integer", "minimum": 1, "maximum": 100000, "default": 500},
+        "max_records_per_concept": {"type": "integer", "minimum": 1, "maximum": 100000, "default": 100},
+        "swing_strength": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 5},
+        "displacement_baseline": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 20},
+        "displacement_multiplier": {"type": "number", "exclusiveMinimum": 0, "default": 1.5},
+        "displacement_body_fraction": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "default": 0.6},
+        "min_fvg_pips": {"type": "number", "minimum": 0, "default": 2},
+        "max_zone_age": {"type": "integer", "minimum": 1, "maximum": 10000, "default": 200},
+        "bpr_max_separation": {"type": "integer", "minimum": 1, "maximum": 10000, "default": 50},
+        "po3_expiry_bars": {"type": "integer", "minimum": 1, "maximum": 10000, "default": 20},
+        "smt_symbol": {"type": "string", "default": ""},
+        "smt_radius": {"type": "integer", "minimum": 0, "maximum": 5000, "default": 1},
+        "enable_draw": {"type": "boolean", "default": false},
+        "enable_calendar": {"type": "boolean", "default": true},
+        "enable_smt": {"type": "boolean", "default": false},
+        "enable_po3": {"type": "boolean", "default": true},
+        "enable_displacement": {"type": "boolean", "default": true},
+        "enable_mss": {"type": "boolean", "default": true},
+        "enable_ifvg": {"type": "boolean", "default": true},
+        "enable_bpr": {"type": "boolean", "default": true},
+        "enable_cs": {"type": "boolean", "default": false},
+        "enable_vix": {"type": "boolean", "default": false},
+        "sessions": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/session"}}
+      },
+      "if": {"properties": {"enable_smt": {"const": true}}},
+      "then": {"properties": {"smt_symbol": {"minLength": 1}}}
+    },
+    "module": {
+      "type": "object",
+      "required": ["concept", "status", "as_of", "truncated", "message"],
+      "properties": {
+        "concept": {"$ref": "#/$defs/concept"},
+        "status": {"$ref": "#/$defs/status"},
+        "as_of": {"$ref": "#/$defs/nullableTimestamp"},
+        "truncated": {"type": "boolean"},
+        "message": {"type": "string"}
+      }
+    },
+    "record": {
+      "type": "object",
+      "required": ["id", "concept", "source_time", "confirmed_at", "updated_at", "direction", "lower", "upper", "state", "active", "related_ids", "period_start", "period_end", "reference_price", "comparison_price", "strength", "reason"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "concept": {"$ref": "#/$defs/concept"},
+        "source_time": {"$ref": "#/$defs/timestamp"},
+        "confirmed_at": {"$ref": "#/$defs/timestamp"},
+        "updated_at": {"$ref": "#/$defs/timestamp"},
+        "direction": {"type": "string", "enum": ["bullish", "bearish", "neutral"]},
+        "lower": {"type": "number"},
+        "upper": {"type": "number"},
+        "state": {"type": "string", "minLength": 1},
+        "active": {"type": "boolean"},
+        "related_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "period_start": {"$ref": "#/$defs/nullableTimestamp"},
+        "period_end": {"$ref": "#/$defs/nullableTimestamp"},
+        "reference_price": {"type": "number"},
+        "comparison_price": {"type": "number"},
+        "strength": {"type": "number"},
+        "reason": {"type": "string"}
+      }
+    }
+  }
+}
