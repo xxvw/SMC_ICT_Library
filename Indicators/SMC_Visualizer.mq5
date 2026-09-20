@@ -27,12 +27,17 @@ input double InpMinFVGPips = 2.0;            // Minimum FVG Size (Pips)
 
 //--- Global manager
 CSmcManager *g_manager = NULL;
+datetime g_lastBarTime = 0;
+string g_statusObject = "";
 
 //+------------------------------------------------------------------+
 //| Custom indicator initialization function                         |
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   g_statusObject = "SMC_VIS_" + IntegerToString(ChartID()) + "_" +
+                    IntegerToString((long)GetMicrosecondCount()) + "_STATUS";
+   g_lastBarTime = 0;
    //--- Create and initialize SmcManager
    g_manager = new CSmcManager();
    if(g_manager == NULL)
@@ -41,8 +46,9 @@ int OnInit()
       return INIT_FAILED;
    }
    
-   //--- Initialize with symbol, period, and draw enabled
-   if(!g_manager.Init(_Symbol, _Period, true))
+   // Each displayed module is enabled explicitly below. This indicator does
+   // not display currency-strength or VIX data and need not request them.
+   if(!g_manager.Init(_Symbol, _Period, false, false, false))
    {
       Print("Error: Failed to initialize CSmcManager");
       delete g_manager;
@@ -50,15 +56,36 @@ int OnInit()
       return INIT_FAILED;
    }
    
-   //--- Configure module settings
+   // Display settings affect rendering only; dependent detectors stay enabled.
    if(g_manager.Swing() != NULL)
+     {
       g_manager.Swing().SetSwingPeriod(InpSwingPeriod);
+      g_manager.Swing().SetDrawEnabled(InpShowSwingPoints);
+     }
+   if(g_manager.Structure() != NULL)
+      g_manager.Structure().SetDrawEnabled(InpShowStructure);
+   if(g_manager.OB() != NULL)
+      g_manager.OB().SetDrawEnabled(InpShowOrderBlocks);
+   if(g_manager.Liquidity() != NULL)
+      g_manager.Liquidity().SetDrawEnabled(InpShowLiquidity);
+   if(g_manager.PD() != NULL)
+      g_manager.PD().SetDrawEnabled(InpShowPremiumDiscount);
+   if(g_manager.OTE() != NULL)
+      g_manager.OTE().SetDrawEnabled(InpShowOTE);
+   if(g_manager.Breaker() != NULL)
+      g_manager.Breaker().SetDrawEnabled(InpShowBreakerBlocks);
    
    if(g_manager.FVG() != NULL)
+     {
       g_manager.FVG().SetMinSizePips(InpMinFVGPips);
+      g_manager.FVG().SetDrawEnabled(InpShowFVG);
+     }
    
    if(g_manager.KZ() != NULL)
+     {
       g_manager.KZ().SetGMTOffset(InpGMTOffset);
+      g_manager.KZ().SetDrawEnabled(InpShowKillZones);
+     }
    
    return INIT_SUCCEEDED;
 }
@@ -77,14 +104,22 @@ int OnCalculate(const int rates_total,
                 const long &volume[],
                 const int &spread[])
 {
-   //--- Only update on new bar
-   if(prev_calculated == rates_total)
+   if(g_manager == NULL || !g_manager.IsInitialized())
+      return 0;
+   datetime currentBarTime = iTime(_Symbol, _Period, 0);
+   if(currentBarTime > 0 && prev_calculated > 0 && currentBarTime == g_lastBarTime)
       return rates_total;
-   
-   //--- Update manager
-   if(g_manager != NULL)
-      g_manager.Update();
-   
+   if(currentBarTime <= 0 || !g_manager.Update())
+     {
+      // Remove stale or partially redrawn results, then retry on the next tick.
+      g_manager.Clean();
+      CSmcDrawing::DrawLabel(g_statusObject, 10, 20,
+                            "SMC: waiting for complete market data", clrOrange, 10);
+      g_lastBarTime = 0;
+      return 0;
+     }
+   ObjectDelete(0, g_statusObject);
+   g_lastBarTime = currentBarTime;
    return rates_total;
 }
 
@@ -93,6 +128,7 @@ int OnCalculate(const int rates_total,
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
+   ObjectDelete(0, g_statusObject);
    //--- Clean up manager
    if(g_manager != NULL)
    {
