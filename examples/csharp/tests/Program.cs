@@ -51,12 +51,34 @@ Check(filtered.Count == 2 && filtered[1].StartsWith("fvg-001\t", StringCompariso
 Check(SnapshotReader.Read(fixture, "FVG", "bearish").Count == 1, "empty result retains header");
 Check(SnapshotReader.Read(Change(root => root["as_of"] = null))[0].Contains("as_of=null", StringComparison.Ordinal), "nullable as_of");
 Check(SnapshotReader.Read(Change(root => root["schema_version"] = "1.42")).Count == expected.Length, "additive minor version");
+Check(SnapshotReader.Read(Change(root => root["message"] = "")).SequenceEqual(expected), "optional empty header message");
+Check(SnapshotReader.Read(Change(root => root["message"] = "Waiting for history")).SequenceEqual(expected), "optional header message");
 Check(SnapshotReader.Read(Change(root =>
 {
     root["future"] = new JsonObject { ["anything"] = true };
     root["config"]!["future"] = "accepted";
     FirstRecord(root)["future"] = 42;
 })).SequenceEqual(expected), "unknown additive fields");
+
+foreach (var (price, formatted) in new (double, string)[]
+{
+    (0.001953125, "0.00195312"), (-0.001953125, "-0.00195312"),
+    (1.000000005, "1.00000000"), (-1.000000005, "-1.00000000"),
+    (0.0, "0.00000000"), (-0.0, "0.00000000"),
+    (1e-12, "0.00000000"), (-1e-12, "0.00000000"),
+    (1e21, "1000000000000000000000.00000000"),
+    (-1e21, "-1000000000000000000000.00000000")
+})
+{
+    var input = Change(root =>
+    {
+        FirstRecord(root)["lower"] = price;
+        FirstRecord(root)["upper"] = price;
+    });
+    var recordId = FirstRecord(JsonNode.Parse(fixture)!.AsObject())["id"]!.GetValue<string>();
+    var rendered = SnapshotReader.Read(input).Single(line => line.StartsWith(recordId + "\t", StringComparison.Ordinal));
+    Check(rendered.EndsWith($"\t{formatted}\t{formatted}", StringComparison.Ordinal), $"exact binary64 price rendering: {price:R}");
+}
 
 // Every required field in the fixture must remain required, including nested data.
 var source = JsonNode.Parse(fixture)!.AsObject();
@@ -80,6 +102,10 @@ Reject(fixture, "invalid direction filter", direction: "long");
 Reject(Change(root => root["schema_version"] = "2.0"), "unsupported version");
 Reject(Change(root => root["schema_version"] = "1.0\n"), "invalid version suffix");
 Reject(Change(root => root["status"] = "UNKNOWN"), "unknown status");
+Reject(Change(root => root["message"] = null), "null header message");
+Reject(Change(root => root["message"] = 42), "numeric header message");
+Reject(Change(root => root["message"] = true), "boolean header message");
+Reject(Change(root => root["message"] = new JsonObject()), "object header message");
 Reject(Change(root => root["time_basis"] = "UTC"), "UTC time basis");
 Reject(Change(root => root["symbol"] = 42), "non-string symbol");
 Reject(Change(root => root["as_of"] = "2026-09-18T12:00:00Z"), "UTC suffix");
