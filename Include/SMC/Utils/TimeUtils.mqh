@@ -25,6 +25,7 @@
 class CSmcTimeUtils
   {
 private:
+   static string   m_barKeys[];
    static datetime m_lastBarTime[];  // Track last bar time per symbol+timeframe
                                      // シンボル+タイムフレームごとの最後のバー時刻を追跡
 
@@ -37,15 +38,13 @@ public:
    //+------------------------------------------------------------------+
    static int GetGMTOffset()
      {
-      datetime serverTime = TimeCurrent();
-      datetime localTime = TimeLocal();
-      
-      // Calculate offset in hours
-      // オフセットを時間単位で計算
-      int offsetSeconds = (int)(serverTime - localTime);
-      int offsetHours = offsetSeconds / 3600;
-      
-      return offsetHours;
+      // Live estimate only. Historical conversions must supply the broker's
+      // offset explicitly; the workstation timezone is not the broker timezone.
+      datetime serverTime = TimeTradeServer();
+      datetime utcTime = TimeGMT();
+      if(serverTime <= 0 || utcTime <= 0)
+         return 0;
+      return (int)MathRound((double)(serverTime - utcTime) / 3600.0);
      }
    
    //+------------------------------------------------------------------+
@@ -79,38 +78,23 @@ public:
       if(currentBarTime == 0)
          return false;
       
-      // Create unique key for symbol+timeframe combination
-      // シンボル+タイムフレームの組み合わせの一意キーを作成
+      // Use the exact key; hashes can make two symbols suppress each other.
       string key = symbol + "_" + IntegerToString(tf);
-      
-      // Simple hash function for MQL5 compatibility
-      // MQL5互換の簡単なハッシュ関数
-      int hash = 0;
-      int len = StringLen(key);
-      for(int i = 0; i < len; i++)
-         hash = hash * 31 + StringGetCharacter(key, i);
-      hash = MathAbs(hash) % 1000; // Limit to reasonable array size
-                                    // 合理的な配列サイズに制限
-      
-      // Resize array if needed
-      // 必要に応じて配列をリサイズ
-      int arraySize = ArraySize(m_lastBarTime);
-      if(hash >= arraySize)
+      int index = -1;
+      for(int i = 0; i < ArraySize(m_barKeys); i++)
+         if(m_barKeys[i] == key) { index = i; break; }
+      if(index < 0)
         {
-         int newSize = hash + 10; // Add some buffer
-                                    // バッファを追加
-         ArrayResize(m_lastBarTime, newSize);
-         // Initialize new elements to 0
-         // 新しい要素を0で初期化
-         for(int i = arraySize; i < newSize; i++)
-            m_lastBarTime[i] = 0;
+         index = ArraySize(m_barKeys);
+         if(ArrayResize(m_barKeys, index + 1) != index + 1 ||
+            ArrayResize(m_lastBarTime, index + 1) != index + 1)
+            return false;
+         m_barKeys[index] = key;
+         m_lastBarTime[index] = 0;
         }
-      
-      // Check if bar time has changed
-      // バー時刻が変更されたかチェック
-      if(m_lastBarTime[hash] != currentBarTime)
+      if(m_lastBarTime[index] != currentBarTime)
         {
-         m_lastBarTime[hash] = currentBarTime;
+         m_lastBarTime[index] = currentBarTime;
          return true;
         }
       
@@ -167,12 +151,9 @@ public:
    //+------------------------------------------------------------------+
    static bool IsEndOfWeek()
      {
-      int dayOfWeek = GetDayOfWeek();
-      int hour = TimeHour(TimeCurrent());
-      
-      // Friday after market close (typically 22:00 GMT)
-      // 金曜日の市場終了後（通常22:00 GMT）
-      return (dayOfWeek == 5 && hour >= 22);
+      MqlDateTime dt;
+      TimeToStruct(ToGMT(TimeCurrent(), GetGMTOffset()), dt);
+      return (dt.day_of_week == 5 && dt.hour >= 22);
      }
    
    //--- DST Detection Methods / DST検出メソッド
@@ -183,23 +164,57 @@ public:
    //+------------------------------------------------------------------+
    static bool IsDST()
      {
-      datetime serverTime = TimeCurrent();
-      datetime localTime = TimeLocal();
-      
-      // If server time is ahead of local time by non-standard amount,
-      // it might indicate DST
-      // サーバー時刻がローカル時刻より標準以外の量だけ進んでいる場合、
-      // DSTを示している可能性がある
-      int offsetSeconds = (int)(serverTime - localTime);
-      int offsetHours = offsetSeconds / 3600;
-      
-      // This is a simple heuristic - adjust based on your broker's timezone
-      // これは簡単なヒューリスティックです - ブローカーのタイムゾーンに応じて調整
-      // Most brokers don't observe DST, so this checks for unusual offsets
-      // ほとんどのブローカーはDSTを観察しないため、異常なオフセットをチェック
-      return (MathAbs(offsetHours) > 12); // Unusual offset might indicate DST
+      // A broker's historical DST policy cannot be inferred from local time.
+      // This legacy no-argument query reports no known adjustment.
+      return false;
      }
    
+   // Broker DST is explicit: callers supply standard and current offsets.
+   static bool IsDST(const int standardOffset, const int currentOffset)
+     {
+      return currentOffset == standardOffset + 1;
+     }
+
+   // Most recently started daily window. An equal start/end is a full day,
+   // preserving the legacy range convention. Returned bounds are server time.
+   static bool SessionBounds(const datetime serverTime,
+                             const int startHour, const int startMinute,
+                             const int endHour, const int endMinute,
+                             const int gmtOffset,
+                             datetime &start, datetime &end)
+     {
+      start = 0;
+      end = 0;
+      if(serverTime <= 0 || startHour < 0 || startHour > 23 ||
+         endHour < 0 || endHour > 23 || startMinute < 0 || startMinute > 59 ||
+         endMinute < 0 || endMinute > 59)
+         return false;
+      datetime reference = ToGMT(serverTime, gmtOffset);
+      MqlDateTime day;
+      if(!TimeToStruct(reference, day))
+         return false;
+      day.hour = 0; day.min = 0; day.sec = 0;
+      datetime window = StructToTime(day) + (startHour * 60 + startMinute) * 60;
+      if(reference < window)
+         window -= 86400;
+      int duration = (endHour * 60 + endMinute) - (startHour * 60 + startMinute);
+      if(duration <= 0)
+         duration += 1440;
+      start = FromGMT(window, gmtOffset);
+      end = start + duration * 60;
+      return true;
+     }
+
+   static bool IsInSessionAt(const datetime serverTime,
+                            const int startHour, const int startMinute,
+                            const int endHour, const int endMinute,
+                            const int gmtOffset = 0)
+     {
+      datetime start, end;
+      return SessionBounds(serverTime, startHour, startMinute, endHour, endMinute,
+                           gmtOffset, start, end) && serverTime >= start && serverTime < end;
+     }
+
    //--- Bar Time Methods / バー時刻メソッド
    
    //+------------------------------------------------------------------+
@@ -219,6 +234,7 @@ public:
 
 // Initialize static array
 // 静的配列を初期化
+string CSmcTimeUtils::m_barKeys[];
 datetime CSmcTimeUtils::m_lastBarTime[];
 
 #endif // __SMC_TIME_UTILS_MQH__
