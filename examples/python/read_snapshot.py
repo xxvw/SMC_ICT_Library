@@ -144,6 +144,8 @@ def validate_snapshot(snapshot: Any) -> None:
     require(snapshot["time_basis"] == "broker", "time_basis must be broker")
     timestamp(snapshot["as_of"], "as_of", nullable=True)
     enum(snapshot["status"], STATUSES, "status")
+    if "message" in snapshot:
+        string(snapshot["message"], "message", nonempty=False)
     validate_config(snapshot["config"])
     require(isinstance(snapshot["modules"], list), "modules must be an array")
     for index, module in enumerate(snapshot["modules"]):
@@ -187,6 +189,12 @@ def validate_record(record: Any, path: str) -> None:
     string(record["reason"], f"{path}.reason", nonempty=False)
 
 
+def format_price(value: float) -> str:
+    """Format the binary64 value with round-to-even; rendered zero has no sign."""
+    rendered = f"{float(value):.8f}"
+    return "0.00000000" if rendered == "-0.00000000" else rendered
+
+
 def render_snapshot(snapshot: dict[str, Any], concept: str | None = None,
                     direction: str | None = None) -> str:
     as_of = snapshot["as_of"] if snapshot["as_of"] is not None else "null"
@@ -198,8 +206,8 @@ def render_snapshot(snapshot: dict[str, Any], concept: str | None = None,
         if direction is not None and record["direction"] != direction:
             continue
         lines.append("\t".join((record["id"], record["concept"], record["direction"],
-                                record["state"], f"{record['lower']:.8f}",
-                                f"{record['upper']:.8f}")))
+                                record["state"], format_price(record["lower"]),
+                                format_price(record["upper"]))))
     return "\n".join(lines) + "\n"
 
 
