@@ -206,6 +206,11 @@ func readSnapshot(reader io.Reader) (snapshot, error) {
 		return result, err
 	}
 	root := document.(map[string]any)
+	if message, present := root["message"]; present {
+		if err := textValue(false)(message, "snapshot.message"); err != nil {
+			return result, err
+		}
+	}
 	config := root["config"].(map[string]any)
 	if config["enable_smt"].(bool) && config["smt_symbol"].(string) == "" {
 		return result, fmt.Errorf("snapshot.config.smt_symbol is required when SMT is enabled")

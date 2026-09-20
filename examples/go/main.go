@@ -95,11 +95,21 @@ func printSnapshot(out io.Writer, snapshot snapshot, opts options) error {
 		if (opts.concept != "" && opts.concept != record.concept) || (opts.direction != "" && opts.direction != record.direction) {
 			continue
 		}
-		if _, err := fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%.8f\t%.8f\n", record.id, record.concept, record.direction, record.state, record.lower, record.upper); err != nil {
+		if _, err := fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%s\t%s\n", record.id, record.concept, record.direction, record.state, formatPrice(record.lower), formatPrice(record.upper)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// formatPrice rounds the exact binary64 value to eight decimal places, ties to
+// even. Fixed-point formatting keeps large prices out of exponent notation.
+func formatPrice(value float64) string {
+	formatted := fmt.Sprintf("%.8f", value)
+	if formatted == "-0.00000000" {
+		return "0.00000000"
+	}
+	return formatted
 }
 
 func main() {
