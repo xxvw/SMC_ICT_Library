@@ -107,5 +107,26 @@ void OnStart()
    zone.SetEvaluationTime(D'2026.01.07 06:00');
    TestAssert(zone.Update(), "yesterday completed sessions are not required for current-day filter");
    TestNear(zone.GetSessionHigh(SESSION_ASIAN), 0, 0, "previous trading date never leaks into current results");
+   CTestKillZone custom;
+   custom.Activate();
+   custom.UseBrokerTime();
+   custom.SetSessionTime(SESSION_ASIAN, 20, 0, 21, 0);
+   custom.SetSessionTime(SESSION_LONDON, 20, 0, 21, 0);
+   custom.SetSessionTime(SESSION_NEWYORK, 20, 0, 21, 0);
+   custom.SetSessionTime(SESSION_LDN_NY_OL, 12, 0, 16, 0);
+   custom.SetEvaluationTime(D'2026.01.07 13:00');
+   for(int i = 0; i < ArraySize(minutes); i++)
+      minutes[i].time = D'2026.01.07 11:00' + i * 60;
+   TestAssert(custom.SetMinuteRates(minutes, D'2026.01.07 11:00', D'2026.01.07 17:00'), "custom session fixture has complete minute coverage");
+   TestAssert(custom.Update(), "legacy overlap remains enabled by default");
+   TestAssert(custom.IsInKillZone(), "legacy standalone overlap is active at 13:00");
+   custom.SetOverlapEnabled(false);
+   TestNear(custom.GetSessionHigh(SESSION_LDN_NY_OL), 0, 0, "disabling overlap immediately clears cached prices");
+   TestAssert(custom.Update(), "custom three-window schedule can disable fixed overlap");
+   TestAssert(!custom.IsInKillZone(), "fixed overlap cannot create a phantom kill zone outside custom windows");
+   TestAssert(!custom.IsInSession(SESSION_LDN_NY_OL), "disabled overlap never reports active");
+   TestAssert(!custom.GetSessionInfo(SESSION_LDN_NY_OL, info), "disabled overlap has no available result");
+   custom.SetOverlapEnabled(true);
+   TestAssert(custom.Update() && custom.IsInKillZone(), "explicit re-enable restores legacy overlap behavior");
    TestFinish();
   }

@@ -18,6 +18,7 @@ private:
    bool             m_available[4];
    int              m_gmtOffset;
    bool             m_brokerTime;
+   bool             m_overlapEnabled;
    datetime         m_evaluationTime;
    ENUM_SMC_SESSION m_currentSession;
    bool             m_inKillZone;
@@ -39,6 +40,9 @@ public:
    void              SetGMTOffset(const int offset) { m_gmtOffset = offset; m_brokerTime = false; ClearRanges(); }
    // New APIs use broker-clock session definitions without timezone inference.
    void              UseBrokerTime(const bool enabled = true) { m_brokerTime = enabled; ClearRanges(); }
+   // Typed configuration defines three independent windows; disable the
+   // legacy fixed overlap when those windows do not use its default hours.
+   void              SetOverlapEnabled(const bool enabled) { m_overlapEnabled = enabled; ClearRanges(); }
    void              SetEvaluationTime(const datetime asOf) { m_evaluationTime = asOf; }
    bool              SetMinuteRates(const MqlRates &rates[], const datetime coverageStart,
                                     const datetime coverageEnd);
@@ -66,7 +70,7 @@ private:
   };
 
 CSmcKillZone::CSmcKillZone()
-   : m_gmtOffset(2), m_brokerTime(false), m_evaluationTime(0),
+   : m_gmtOffset(2), m_brokerTime(false), m_overlapEnabled(true), m_evaluationTime(0),
      m_currentSession(SESSION_NONE), m_inKillZone(false),
      m_sharedMinutes(false), m_minutesValid(false), m_coverageStart(0), m_coverageEnd(0)
   {
@@ -81,6 +85,7 @@ bool CSmcKillZone::Init(const string symbol, const ENUM_TIMEFRAMES timeframe,
    SetModulePrefix("KZ");
    m_gmtOffset = gmtOffset;
    m_brokerTime = false;
+   m_overlapEnabled = true;
    m_evaluationTime = 0;
    m_sharedMinutes = false;
    m_minutesValid = false;
@@ -228,6 +233,8 @@ bool CSmcKillZone::Update()
    datetime dayStart = CSmcTimeUtils::FromGMT(StructToTime(day), Offset());
    for(int i = 0; i < 4; i++)
      {
+      if(m_sessions[i].session == SESSION_LDN_NY_OL && !m_overlapEnabled)
+         continue;
       if(!CSmcTimeUtils::SessionBounds(now,
           m_sessions[i].startHourGMT, m_sessions[i].startMinGMT,
           m_sessions[i].endHourGMT, m_sessions[i].endMinGMT, Offset(),
