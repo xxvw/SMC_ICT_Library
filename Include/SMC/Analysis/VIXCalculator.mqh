@@ -31,7 +31,9 @@ private:
    ENUM_VIX_LEVEL    m_currentLevel;   // 現在のレベル
    int               m_vixTrend;       // VIXトレンド (1=上昇, 0=横, -1=下降)
    double            m_prevVIX;        // 前回のVIX値
-   double            m_vixHistory[];   // VIX履歴
+   double            m_vixHistory[];   // One value per completed calculation bar
+   bool              m_ready;
+   datetime          m_lastEvaluated;
 
    //--- レベル閾値
    double            m_threshLow;
@@ -51,6 +53,7 @@ public:
 
    //--- VIX値
    double            GetVIX()        const { return m_currentVIX; }
+   bool              IsReady()       const { return m_ready; }
    ENUM_VIX_LEVEL    GetVIXLevel()   const { return m_currentLevel; }
    int               GetVIXTrend()   const { return m_vixTrend; }
    string            GetVIXLevelName() const;
@@ -68,8 +71,9 @@ public:
    void              SetThresholds(const double low, const double normal, const double high);
 
 private:
-   void              Calculate();
-   double            CalcHistoricalVolatility();
+   bool              Calculate();
+   bool              CalcHistoricalVolatility(double &value, datetime &evaluated);
+   void              ResetOutputs();
    ENUM_VIX_LEVEL    ClassifyLevel(const double vix) const;
    void              UpdateTrend();
    string            DetectVIXSymbol() const;
@@ -84,6 +88,8 @@ CSmcVIXCalculator::CSmcVIXCalculator()
    , m_currentLevel(VIX_NORMAL)
    , m_vixTrend(0)
    , m_prevVIX(0)
+   , m_ready(false)
+   , m_lastEvaluated(0)
    , m_threshLow(15.0)
    , m_threshNormal(25.0)
    , m_threshHigh(35.0)
@@ -100,13 +106,14 @@ bool CSmcVIXCalculator::Init(const string symbol, const ENUM_TIMEFRAMES timefram
                              const bool enableDraw, const int calcPeriod,
                              const ENUM_TIMEFRAMES calcTF)
   {
+   ResetOutputs();
    if(!CSmcBase::Init(symbol, timeframe, enableDraw))
       return false;
 
-   m_prefix     = "SMC_VIX_";
+   SetModulePrefix("VIX");
    m_calcPeriod = MathMax(5, calcPeriod);
-   m_calcTF     = calcTF;
-   m_calcSymbol = symbol;
+   m_calcTF     = calcTF == PERIOD_CURRENT ? m_timeframe : calcTF;
+   m_calcSymbol = m_symbol;
 
    ArrayResize(m_vixHistory, 0);
 
@@ -114,27 +121,38 @@ bool CSmcVIXCalculator::Init(const string symbol, const ENUM_TIMEFRAMES timefram
   }
 
 //+------------------------------------------------------------------+
+void CSmcVIXCalculator::ResetOutputs()
+  {
+   m_currentVIX = 0;
+   m_prevVIX = 0;
+   m_currentLevel = VIX_NORMAL;
+   m_vixTrend = 0;
+   m_ready = false;
+   m_lastEvaluated = 0;
+   ArrayResize(m_vixHistory, 0);
+  }
+
 bool CSmcVIXCalculator::Update()
   {
-   if(!m_initialized)
+   if(!m_initialized || !Calculate())
+     {
+      ResetOutputs();
       return false;
-
-   m_prevVIX = m_currentVIX;
-   Calculate();
+     }
    UpdateTrend();
-
    return true;
   }
 
 void CSmcVIXCalculator::Clean()
   {
-   CSmcDrawing::DeleteObjectsByPrefix(m_prefix);
-   CSmcDrawing::Redraw();
+   CSmcBase::Clean();
   }
 
 //+------------------------------------------------------------------+
 string CSmcVIXCalculator::GetVIXLevelName() const
   {
+   if(!m_ready)
+      return "Not ready";
    switch(m_currentLevel)
      {
       case VIX_LOW:     return "Low";
@@ -150,6 +168,8 @@ string CSmcVIXCalculator::GetVIXLevelName() const
 //+------------------------------------------------------------------+
 double CSmcVIXCalculator::GetLotMultiplier() const
   {
+   if(!m_ready)
+      return 0.0;
    switch(m_currentLevel)
      {
       case VIX_LOW:     return 1.2;   // 低ボラ: やや大きめ
@@ -165,6 +185,8 @@ double CSmcVIXCalculator::GetLotMultiplier() const
 //+------------------------------------------------------------------+
 double CSmcVIXCalculator::GetSLMultiplier() const
   {
+   if(!m_ready)
+      return 0.0;
    switch(m_currentLevel)
      {
       case VIX_LOW:     return 0.8;
@@ -177,7 +199,7 @@ double CSmcVIXCalculator::GetSLMultiplier() const
 
 bool CSmcVIXCalculator::IsEntryAllowed() const
   {
-   return m_currentLevel != VIX_EXTREME;
+   return m_ready && m_currentLevel != VIX_EXTREME;
   }
 
 //+------------------------------------------------------------------+
@@ -190,65 +212,86 @@ void CSmcVIXCalculator::SetThresholds(const double low, const double normal,
   }
 
 //+------------------------------------------------------------------+
-void CSmcVIXCalculator::Calculate()
+bool CSmcVIXCalculator::Calculate()
   {
-   m_currentVIX   = CalcHistoricalVolatility();
-   m_currentLevel = ClassifyLevel(m_currentVIX);
-
-//--- 履歴追加
+   double value = 0;
+   datetime evaluated = 0;
+   if(!CalcHistoricalVolatility(value, evaluated))
+      return false;
+   if(evaluated < m_lastEvaluated)
+      ResetOutputs();
    int size = ArraySize(m_vixHistory);
-   ArrayResize(m_vixHistory, size + 1);
-   m_vixHistory[size] = m_currentVIX;
-
-//--- 履歴上限
+   // Repeated updates of one closed candle never inflate history or momentum.
+   if(size > 0 && evaluated == m_lastEvaluated)
+     {
+      m_prevVIX = size > 1 ? m_vixHistory[size - 2] : 0;
+      m_vixHistory[size - 1] = value;
+     }
+   else
+     {
+      m_prevVIX = size > 0 ? m_vixHistory[size - 1] : 0;
+      ArrayResize(m_vixHistory, size + 1);
+      m_vixHistory[size] = value;
+     }
    if(ArraySize(m_vixHistory) > 500)
      {
-      int newSize = 250;
-      double temp[];
-      ArrayCopy(temp, m_vixHistory, 0, ArraySize(m_vixHistory) - newSize, newSize);
-      ArrayCopy(m_vixHistory, temp);
-      ArrayResize(m_vixHistory, newSize);
+      double recent[];
+      ArrayCopy(recent, m_vixHistory, 0, ArraySize(m_vixHistory) - 250, 250);
+      ArrayCopy(m_vixHistory, recent);
+      ArrayResize(m_vixHistory, 250);
      }
+   m_currentVIX = value;
+   m_currentLevel = ClassifyLevel(value);
+   m_lastEvaluated = evaluated;
+   m_ready = true;
+   return true;
   }
 
-//+------------------------------------------------------------------+
-//| ヒストリカルボラティリティ計算                                     |
-//|                                                                    |
-//| σ_ann = σ_daily × √252                                           |
-//| σ_daily = StdDev(ln(Close[i]/Close[i+1]))                        |
-//+------------------------------------------------------------------+
-double CSmcVIXCalculator::CalcHistoricalVolatility()
+// Requires period+1 strictly positive, finite completed closes. Zero variance
+// is a valid zero result; unavailable/invalid data is an Update() failure.
+// Shared primary rates are coherent only when calcTF matches the primary TF.
+// The legacy default remains D1; a manager's M5 context cannot become D1 data.
+// The existing annualization convention (sqrt(252)) remains unchanged.
+bool CSmcVIXCalculator::CalcHistoricalVolatility(double &value, datetime &evaluated)
   {
+   if(m_calcPeriod > 2147483645)
+      return false; // Keep period+2 representable before any array operation.
+   MqlRates rates[];
+   if(m_calcTF == m_timeframe && m_ratesContextAttempted)
+     {
+      if(!m_ratesValid || RatesCount() < m_calcPeriod + 2)
+         return false;
+      ArrayCopy(rates, m_rates, 0, RatesCount() - m_calcPeriod - 2, m_calcPeriod + 1);
+     }
+   else
+     {
+      ArraySetAsSeries(rates, false);
+      if(CopyRates(m_calcSymbol, m_calcTF, 1, m_calcPeriod + 1, rates) != m_calcPeriod + 1)
+         return false;
+     }
    double returns[];
    ArrayResize(returns, m_calcPeriod);
-
-   for(int i = 0; i < m_calcPeriod; i++)
-     {
-      double close0 = iClose(m_calcSymbol, m_calcTF, i);
-      double close1 = iClose(m_calcSymbol, m_calcTF, i + 1);
-      if(close0 == 0 || close1 == 0)
-         return m_currentVIX;  // フォールバック
-      returns[i] = MathLog(close0 / close1);
-     }
-
-//--- 平均
    double mean = 0;
-   for(int i = 0; i < m_calcPeriod; i++)
-      mean += returns[i];
+   for(int i = 0; i <= m_calcPeriod; i++)
+     {
+      if(rates[i].time <= 0 || !MathIsValidNumber(rates[i].close) || rates[i].close <= 0 ||
+         (i > 0 && rates[i].time <= rates[i - 1].time))
+         return false;
+      if(i == 0)
+         continue;
+      returns[i - 1] = MathLog(rates[i].close / rates[i - 1].close);
+      if(!MathIsValidNumber(returns[i - 1]))
+         return false;
+      mean += returns[i - 1];
+     }
    mean /= m_calcPeriod;
-
-//--- 標準偏差
    double variance = 0;
    for(int i = 0; i < m_calcPeriod; i++)
       variance += (returns[i] - mean) * (returns[i] - mean);
-   variance /= (m_calcPeriod - 1);
-
-   double dailyVol = MathSqrt(variance);
-
-//--- 年率化 (√252 ≈ 15.87)
-   double annualizedVol = dailyVol * MathSqrt(252.0) * 100.0;
-
-   return annualizedVol;
+   variance /= m_calcPeriod - 1;
+   value = MathSqrt(variance) * MathSqrt(252.0) * 100.0;
+   evaluated = rates[m_calcPeriod].time;
+   return MathIsValidNumber(value) && value >= 0;
   }
 
 //+------------------------------------------------------------------+
@@ -262,7 +305,7 @@ ENUM_VIX_LEVEL CSmcVIXCalculator::ClassifyLevel(const double vix) const
 
 void CSmcVIXCalculator::UpdateTrend()
   {
-   if(m_prevVIX == 0)
+   if(ArraySize(m_vixHistory) < 2)
      { m_vixTrend = 0; return; }
 
    double diff = m_currentVIX - m_prevVIX;
@@ -275,6 +318,7 @@ void CSmcVIXCalculator::UpdateTrend()
 double CSmcVIXCalculator::GetPercentile(const int period) const
   {
    int size = ArraySize(m_vixHistory);
+   if(!m_ready || period <= 0) return 0.0;
    if(size < 2) return 50.0;
 
    int lookback = MathMin(period, size);
@@ -290,6 +334,7 @@ double CSmcVIXCalculator::GetPercentile(const int period) const
 double CSmcVIXCalculator::GetVIXMA(const int period) const
   {
    int size = ArraySize(m_vixHistory);
+   if(!m_ready || period <= 0) return 0.0;
    if(size < period) return m_currentVIX;
 
    double sum = 0;
