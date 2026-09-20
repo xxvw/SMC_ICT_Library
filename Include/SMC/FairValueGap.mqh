@@ -50,8 +50,17 @@ public:
    virtual void      Clean();
 
    //--- 設定
+   void              SetEvaluationLimits(const int lookbackBars, const int maxRecords)
+     {
+      m_lookbackBars = MathMax(1, lookbackBars);
+      m_maxFVGs = MathMax(1, maxRecords);
+      ArrayResize(m_bullishFVGs, m_maxFVGs);
+      ArrayResize(m_bearishFVGs, m_maxFVGs);
+      m_bullishCount = 0;
+      m_bearishCount = 0;
+     }
    void              SetMinSizePips(const double pips) { m_minSizePips = pips; }
-   void              SetMaxAge(const int age) { m_maxAge = age; }
+   void              SetMaxAge(const int age) { m_maxAge = MathMax(0, age); }
 
    //--- Bullish FVG
    int               GetBullishCount() const { return m_bullishCount; }
@@ -72,13 +81,14 @@ public:
 private:
    void              DetectFVGs();
    void              UpdateStates();
+   void              ReplayZone(SmcZone &zone);
    ENUM_FVG_PROBABILITY DetermineProbability(const int barIndex, const bool isBullish);
    void              DrawFVGs();
   };
 
 //+------------------------------------------------------------------+
 CSmcFairValueGap::CSmcFairValueGap()
-   : m_lookbackBars(300)
+   : m_lookbackBars(500)
    , m_maxFVGs(30)
    , m_maxAge(200)
    , m_minSizePips(2.0)
@@ -100,12 +110,15 @@ bool CSmcFairValueGap::Init(const string symbol, const ENUM_TIMEFRAMES timeframe
                             const bool enableDraw, const double minSizePips,
                             const int maxAge)
   {
+   m_bullishCount = 0; m_bearishCount = 0;
    if(!CSmcBase::Init(symbol, timeframe, enableDraw))
       return false;
 
-   m_prefix      = "SMC_FVG_";
+   SetModulePrefix("FVG");
    m_minSizePips = minSizePips;
-   m_maxAge      = maxAge;
+   m_maxAge      = MathMax(0, maxAge);
+   m_bullishCount = 0;
+   m_bearishCount = 0;
 
    ArrayResize(m_bullishFVGs, m_maxFVGs);
    ArrayResize(m_bearishFVGs, m_maxFVGs);
@@ -116,11 +129,12 @@ bool CSmcFairValueGap::Init(const string symbol, const ENUM_TIMEFRAMES timeframe
 //+------------------------------------------------------------------+
 bool CSmcFairValueGap::Update()
   {
-   if(!m_initialized)
-      return false;
-
+   if(m_enableDraw)
+      CSmcDrawing::DeleteObjectsByPrefix(m_prefix);
    m_bullishCount = 0;
    m_bearishCount = 0;
+   if(!m_initialized || !PrepareRates(m_lookbackBars + 24) || RatesCount() < 24)
+      return false;
 
    DetectFVGs();
    UpdateStates();
@@ -200,7 +214,7 @@ int CSmcFairValueGap::GetFreshBullishCount() const
   {
    int c = 0;
    for(int i = 0; i < m_bullishCount; i++)
-      if(m_bullishFVGs[i].IsFresh())
+      if(m_bullishFVGs[i].IsActive() && m_bullishFVGs[i].IsFresh())
          c++;
    return c;
   }
@@ -209,7 +223,7 @@ int CSmcFairValueGap::GetFreshBearishCount() const
   {
    int c = 0;
    for(int i = 0; i < m_bearishCount; i++)
-      if(m_bearishFVGs[i].IsFresh())
+      if(m_bearishFVGs[i].IsActive() && m_bearishFVGs[i].IsFresh())
          c++;
    return c;
   }
@@ -242,10 +256,13 @@ bool CSmcFairValueGap::IsPriceInBearishFVG(const double price) const
 //+------------------------------------------------------------------+
 void CSmcFairValueGap::DetectFVGs()
   {
-   double minSize = PipsToPrice(m_minSizePips);
-   int limit = MathMin(m_lookbackBars, iBars(m_symbol, m_timeframe) - 3);
+   double minSize = m_minSizePips * m_pipSize;
+   // Use the same tiny tick tolerance as the shared imbalance replay engine.
+   double epsilon = (m_tickSize > 0 ? m_tickSize : m_point) * 1e-8;
+   int limit = MathMin(m_lookbackBars + 2, RatesCount() - 21);
 
-   for(int i = 2; i < limit; i++)
+   // All three candles must be closed: shift 0 is never a detector input.
+   for(int i = 3; i <= limit; i++)
      {
       double high0 = High(i - 2);  // 最新側 (3本目)
       double low0  = Low(i - 2);
@@ -257,16 +274,18 @@ void CSmcFairValueGap::DetectFVGs()
       if(low0 > high2)
         {
          double gapSize = low0 - high2;
-         if(gapSize >= minSize && m_bullishCount < m_maxFVGs)
+         if(gapSize + epsilon >= minSize && m_bullishCount < m_maxFVGs)
            {
             m_bullishFVGs[m_bullishCount].Init();
             m_bullishFVGs[m_bullishCount].topPrice      = low0;    // FVG上端
             m_bullishFVGs[m_bullishCount].bottomPrice    = high2;   // FVG下端
             m_bullishFVGs[m_bullishCount].formationTime  = midTime;
             m_bullishFVGs[m_bullishCount].formationBar   = i - 1;
+            m_bullishFVGs[m_bullishCount].confirmedBar = i - 2;
+            m_bullishFVGs[m_bullishCount].confirmedTime = Time(i - 2);
             m_bullishFVGs[m_bullishCount].isBullish      = true;
             m_bullishFVGs[m_bullishCount].state           = ZONE_FRESH;
-            m_bullishFVGs[m_bullishCount].age             = i - 1;
+            m_bullishFVGs[m_bullishCount].age             = i - 3;
             m_bullishFVGs[m_bullishCount].isValid         = true;
             m_bullishFVGs[m_bullishCount].probability     =
                (ENUM_ZONE_PROBABILITY)DetermineProbability(i - 1, true);
@@ -280,16 +299,18 @@ void CSmcFairValueGap::DetectFVGs()
       if(high0 < low2)
         {
          double gapSize = low2 - high0;
-         if(gapSize >= minSize && m_bearishCount < m_maxFVGs)
+         if(gapSize + epsilon >= minSize && m_bearishCount < m_maxFVGs)
            {
             m_bearishFVGs[m_bearishCount].Init();
             m_bearishFVGs[m_bearishCount].topPrice      = low2;    // FVG上端
             m_bearishFVGs[m_bearishCount].bottomPrice    = high0;   // FVG下端
             m_bearishFVGs[m_bearishCount].formationTime  = midTime;
             m_bearishFVGs[m_bearishCount].formationBar   = i - 1;
+            m_bearishFVGs[m_bearishCount].confirmedBar = i - 2;
+            m_bearishFVGs[m_bearishCount].confirmedTime = Time(i - 2);
             m_bearishFVGs[m_bearishCount].isBullish      = false;
             m_bearishFVGs[m_bearishCount].state           = ZONE_FRESH;
-            m_bearishFVGs[m_bearishCount].age             = i - 1;
+            m_bearishFVGs[m_bearishCount].age             = i - 3;
             m_bearishFVGs[m_bearishCount].isValid         = true;
             m_bearishFVGs[m_bearishCount].probability     =
                (ENUM_ZONE_PROBABILITY)DetermineProbability(i - 1, false);
@@ -321,12 +342,13 @@ ENUM_FVG_PROBABILITY CSmcFairValueGap::DetermineProbability(const int barIndex,
       return FVG_HIGH_PROB;
 
 //--- ブレイクアウェイ判定 (大きなギャップ)
-   double avgRange = GetAverageRange(20);
+   // The classification baseline is strictly older than the pattern.
+   double avgRange = GetAverageRange(20, barIndex + 2);
    double gapSize  = isBullish ?
                      (Low(barIndex - 1) - High(barIndex + 1)) :
                      (Low(barIndex + 1) - High(barIndex - 1));
 
-   if(MathAbs(gapSize) > avgRange * 2.0)
+   if(avgRange > 0 && MathAbs(gapSize) > avgRange * 2.0)
       return FVG_BREAKAWAY;
 
    return FVG_LOW_PROB;
@@ -335,60 +357,44 @@ ENUM_FVG_PROBABILITY CSmcFairValueGap::DetermineProbability(const int barIndex,
 //+------------------------------------------------------------------+
 void CSmcFairValueGap::UpdateStates()
   {
-   double currentBid = SymbolInfoDouble(m_symbol, SYMBOL_BID);
-
    for(int i = 0; i < m_bullishCount; i++)
-     {
-      if(!m_bullishFVGs[i].isValid)
-         continue;
-
-      if(m_bullishFVGs[i].age > m_maxAge)
-        {
-         m_bullishFVGs[i].isValid = false;
-         continue;
-        }
-
-      //--- 価格がFVGゾーン内に入った
-      if(currentBid <= m_bullishFVGs[i].topPrice &&
-         currentBid >= m_bullishFVGs[i].bottomPrice)
-        {
-         if(m_bullishFVGs[i].state == ZONE_FRESH)
-            m_bullishFVGs[i].state = ZONE_TESTED;
-        }
-
-      //--- FVGが完全に埋まった
-      if(currentBid < m_bullishFVGs[i].bottomPrice &&
-         m_bullishFVGs[i].state == ZONE_TESTED)
-        {
-         m_bullishFVGs[i].state   = ZONE_BROKEN;
-         m_bullishFVGs[i].isValid = false;
-        }
-     }
-
+      ReplayZone(m_bullishFVGs[i]);
    for(int i = 0; i < m_bearishCount; i++)
+      ReplayZone(m_bearishFVGs[i]);
+  }
+
+// Rebuild a zone from closed candles after confirmation, oldest first.
+// Expiry preserves the last price state; it is not a price break.
+void CSmcFairValueGap::ReplayZone(SmcZone &zone)
+  {
+   zone.age = zone.confirmedBar - 1;
+   double tick = m_tickSize > 0 ? m_tickSize : m_point;
+   for(int bar = zone.confirmedBar - 1; bar >= 1; bar--)
      {
-      if(!m_bearishFVGs[i].isValid)
+      if(zone.confirmedBar - bar > m_maxAge)
+        {
+         zone.isExpired = true;
+         zone.isValid = false;
+         break;
+        }
+      bool broken = zone.isBullish ? Close(bar) <= NormalizePrice(zone.bottomPrice - tick) :
+                                     Close(bar) >= NormalizePrice(zone.topPrice + tick);
+      if(broken)
+        {
+         zone.state = ZONE_BROKEN;
+         zone.brokenTime = Time(bar);
+         zone.isValid = false;
+         break;
+        }
+      bool touched = Low(bar) <= zone.topPrice && High(bar) >= zone.bottomPrice;
+      if(!touched)
          continue;
-
-      if(m_bearishFVGs[i].age > m_maxAge)
-        {
-         m_bearishFVGs[i].isValid = false;
-         continue;
-        }
-
-      if(currentBid >= m_bearishFVGs[i].bottomPrice &&
-         currentBid <= m_bearishFVGs[i].topPrice)
-        {
-         if(m_bearishFVGs[i].state == ZONE_FRESH)
-            m_bearishFVGs[i].state = ZONE_TESTED;
-        }
-
-      if(currentBid > m_bearishFVGs[i].topPrice &&
-         m_bearishFVGs[i].state == ZONE_TESTED)
-        {
-         m_bearishFVGs[i].state   = ZONE_BROKEN;
-         m_bearishFVGs[i].isValid = false;
-        }
+      if(zone.state == ZONE_FRESH)
+         zone.state = ZONE_TESTED;
+      bool midpoint = zone.isBullish ? Low(bar) <= zone.GetCenter() :
+                                       High(bar) >= zone.GetCenter();
+      if(midpoint)
+         zone.state = ZONE_MITIGATED;
      }
   }
 
