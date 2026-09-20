@@ -65,13 +65,13 @@ def discover_runtime(compiler: Compiler) -> tuple[Path, Path]:
 
 
 def collect_tests(selected: list[str]) -> list[Path]:
-    sources = [ROOT / name for name in selected] if selected else sorted((ROOT / "Tests").rglob("*.mq5"))
+    sources = [ROOT / name for name in selected] if selected else sorted((ROOT / "tests").rglob("*.mq5"))
     tests = []
     for source in sources:
         try:
-            relative = source.resolve().relative_to((ROOT / "Tests").resolve())
+            relative = source.resolve().relative_to((ROOT / "tests").resolve())
         except ValueError as exc:
-            raise RuntimeError(f"Tests must be inside Tests/: {source}") from exc
+            raise RuntimeError(f"Tests must be inside tests/: {source}") from exc
         if not source.is_file() or source.suffix.lower() != ".mq5":
             raise RuntimeError(f"Expected an existing MQL5 test script: {source}")
         tests.append(relative)
@@ -225,7 +225,7 @@ def run_test(compiler: Compiler, executable: Path, symbols: Path,
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--source", action="append", default=[], help="Run only this repository-relative Tests/*.mq5 file (repeatable).")
+    parser.add_argument("--source", action="append", default=[], help="Run only this repository-relative tests/*.mq5 file (repeatable).")
     parser.add_argument("--timeout", type=int, default=120, help="Maximum seconds per compilation or runtime execution (default: 120).")
     parser.add_argument("--artifacts", type=Path, help="Preserve verified reports and MT5 snapshot bytes in a unique run directory here. A manifest is published only if every selected test passes.")
     args = parser.parse_args(argv)
@@ -244,19 +244,19 @@ def main(argv: list[str] | None = None) -> int:
             stage = Path(directory)
             shutil.copytree(compiler.includes, stage / "Include")
             shutil.copytree(ROOT / "Include", stage / "Include", dirs_exist_ok=True)
-            shutil.copytree(ROOT / "Tests", stage / "Tests")
+            shutil.copytree(ROOT / "tests", stage / "tests")
             failures = []
             for index, relative in enumerate(tests):
                 try:
-                    source = stage / "Tests" / relative
+                    source = stage / "tests" / relative
                     compile_source(compiler, source, stage, args.timeout)
                     result = run_test(compiler, executable, symbols, source.with_suffix(".ex5"),
                                       stage / f"runtime-{index}", args.timeout, artifacts)
-                    results.append({"source": f"Tests/{relative}", **result})
-                    print(f"PASS Tests/{relative}: {result['assertions']} MQL5 assertions", flush=True)
+                    results.append({"source": f"tests/{relative}", **result})
+                    print(f"PASS tests/{relative}: {result['assertions']} MQL5 assertions", flush=True)
                 except (RuntimeError, OSError) as exc:
                     failures.append(relative)
-                    print(f"FAIL Tests/{relative}: {exc}", file=sys.stderr, flush=True)
+                    print(f"FAIL tests/{relative}: {exc}", file=sys.stderr, flush=True)
             if failures:
                 return 1
         if artifacts is not None:

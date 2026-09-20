@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_DIRS = ("Experts", "Indicators", "Scripts", "Include")
+SOURCE_DIRS = ("Experts", "Indicators", "Scripts", "Include", "tests")
 SOURCE_SUFFIXES = {".mq5", ".mqh"}
 INCLUDE_RE = re.compile(r"^\s*#include\s+([<\"])([^>\"]+)[>\"]", re.MULTILINE)
 
