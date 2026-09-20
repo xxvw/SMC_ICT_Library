@@ -67,17 +67,17 @@ int OnInit()
 
    //--- スイング期間設定
    if(g_smc.Swing() != NULL)
-      g_smc.Swing()->SetSwingPeriod(InpSwingPeriod);
+      g_smc.Swing().SetSwingPeriod(InpSwingPeriod);
 
    //--- GMTオフセット設定
    if(g_smc.KZ() != NULL)
-      g_smc.KZ()->SetGMTOffset(InpGMTOffset);
+      g_smc.KZ().SetGMTOffset(InpGMTOffset);
 
    //--- コンフルエンス設定
    if(g_smc.Confluence() != NULL)
      {
-      g_smc.Confluence()->SetMinConfluence(InpMinConfluence);
-      g_smc.Confluence()->SetMinScore(InpMinScore);
+      g_smc.Confluence().SetMinConfluence(InpMinConfluence);
+      g_smc.Confluence().SetMinScore(InpMinScore);
      }
 
    //--- トレード設定
@@ -87,7 +87,8 @@ int OnInit()
    g_trade.SetAsyncMode(false);
 
    //--- 初期更新
-   g_smc.Update();
+   if(!g_smc.Update())
+      Print("[SMC Sample EA] Waiting for complete market data before trading");
 
    Print("[SMC Sample EA] Initialized successfully");
    Print("[SMC Sample EA] Symbol: ", _Symbol, ", Timeframe: ", EnumToString(PERIOD_CURRENT));
@@ -121,18 +122,19 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   //--- 新規バーチェック
-   datetime currentBarTime = iTime(_Symbol, PERIOD_CURRENT, 0);
-   bool isNewBar = (currentBarTime != g_lastBarTime);
-   if(isNewBar)
-      g_lastBarTime = currentBarTime;
-
-   //--- SMC更新
+   //--- SMC更新。失敗した足は次のティックで再試行し、古いシグナルで発注しない。
    if(g_smc == NULL || !g_smc.IsInitialized())
       return;
 
-   if(isNewBar)
-      g_smc.Update();
+   datetime currentBarTime = iTime(_Symbol, PERIOD_CURRENT, 0);
+   if(currentBarTime <= 0)
+      return;
+   if(currentBarTime != g_lastBarTime)
+     {
+      if(!g_smc.Update())
+         return;
+      g_lastBarTime = currentBarTime;
+     }
 
    //--- フィルターチェック
    if(!CheckFilters())
@@ -183,14 +185,14 @@ bool CheckFilters()
    //--- VIXフィルター
    if(InpEnableVIXFilter && g_smc.VIX() != NULL)
      {
-      if(!g_smc.VIX()->IsEntryAllowed())
+      if(!g_smc.VIX().IsEntryAllowed())
          return false;
      }
 
    //--- キルゾーンフィルター
    if(InpEnableKillZoneFilter && g_smc.KZ() != NULL)
      {
-      if(!g_smc.KZ()->IsInKillZone())
+      if(!g_smc.KZ().IsInKillZone())
          return false;
      }
 
@@ -212,14 +214,14 @@ void OpenBuyTrade()
    //--- 最寄りの強気OB検索
    double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    SmcZone ob;
-   if(g_smc.OB() == NULL || !g_smc.OB()->GetNearestBullishOB(currentPrice, ob))
+   if(g_smc.OB() == NULL || !g_smc.OB().GetNearestBullishOB(currentPrice, ob))
      {
       Print("[SMC Sample EA] No bullish OB found for buy entry");
       return;
      }
 
    //--- ストップロス計算
-   double sl = g_smc.OB()->GetStopLossForBuy(ob);
+   double sl = g_smc.OB().GetStopLossForBuy(ob);
    double slPips = PriceToPips(currentPrice - sl);
 
    if(slPips <= 0)
@@ -262,14 +264,14 @@ void OpenSellTrade()
    //--- 最寄りの弱気OB検索
    double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    SmcZone ob;
-   if(g_smc.OB() == NULL || !g_smc.OB()->GetNearestBearishOB(currentPrice, ob))
+   if(g_smc.OB() == NULL || !g_smc.OB().GetNearestBearishOB(currentPrice, ob))
      {
       Print("[SMC Sample EA] No bearish OB found for sell entry");
       return;
      }
 
    //--- ストップロス計算
-   double sl = g_smc.OB()->GetStopLossForSell(ob);
+   double sl = g_smc.OB().GetStopLossForSell(ob);
    double slPips = PriceToPips(sl - currentPrice);
 
    if(slPips <= 0)
@@ -361,11 +363,11 @@ void DrawDashboard()
    string bosChochText = "BOS/CHoCH: ";
    if(g_smc.Structure() != NULL)
      {
-      if(g_smc.Structure()->HasRecentBOS(10))
+      if(g_smc.Structure().HasRecentBOS(10))
          bosChochText += "BOS ";
-      if(g_smc.Structure()->HasRecentCHoCH(10))
+      if(g_smc.Structure().HasRecentCHoCH(10))
          bosChochText += "CHoCH";
-      if(!g_smc.Structure()->HasRecentBOS(10) && !g_smc.Structure()->HasRecentCHoCH(10))
+      if(!g_smc.Structure().HasRecentBOS(10) && !g_smc.Structure().HasRecentCHoCH(10))
          bosChochText += "None";
      }
    else
@@ -377,7 +379,7 @@ void DrawDashboard()
    //--- OB数
    int obCount = 0;
    if(g_smc.OB() != NULL)
-      obCount = g_smc.OB()->GetBullishCount() + g_smc.OB()->GetBearishCount();
+      obCount = g_smc.OB().GetBullishCount() + g_smc.OB().GetBearishCount();
    CSmcDrawing::DrawLabel(g_dashboardPrefix + "OB", x + 10, currentY, 
                           "OB Count: " + IntegerToString(obCount), textColor, 9);
    currentY += lineHeight;
@@ -385,7 +387,7 @@ void DrawDashboard()
    //--- FVG数
    int fvgCount = 0;
    if(g_smc.FVG() != NULL)
-      fvgCount = g_smc.FVG()->GetBullishCount() + g_smc.FVG()->GetBearishCount();
+      fvgCount = g_smc.FVG().GetBullishCount() + g_smc.FVG().GetBearishCount();
    CSmcDrawing::DrawLabel(g_dashboardPrefix + "FVG", x + 10, currentY, 
                           "FVG Count: " + IntegerToString(fvgCount), textColor, 9);
    currentY += lineHeight;
@@ -394,8 +396,8 @@ void DrawDashboard()
    string vixText = "VIX: ";
    if(g_smc.VIX() != NULL)
      {
-      double vix = g_smc.VIX()->GetVIX();
-      vixText += DoubleToString(vix, 2) + " (" + g_smc.VIX()->GetVIXLevelName() + ")";
+      double vix = g_smc.VIX().GetVIX();
+      vixText += DoubleToString(vix, 2) + " (" + g_smc.VIX().GetVIXLevelName() + ")";
      }
    else
       vixText += "N/A";
@@ -408,7 +410,7 @@ void DrawDashboard()
    if(g_smc.CurrStr() != NULL)
      {
       string sorted[];
-      g_smc.CurrStr()->GetSortedCurrencies(sorted);
+      g_smc.CurrStr().GetSortedCurrencies(sorted);
       if(ArraySize(sorted) >= 3)
          csText += sorted[0] + " " + sorted[1] + " " + sorted[2];
       else
@@ -448,9 +450,9 @@ void DrawDashboard()
    if(g_smc.Confluence() != NULL)
      {
       SmcConfluenceZone zone;
-      if(signal == SIGNAL_BUY && g_smc.Confluence()->GetBuyZone(zone))
+      if(signal == SIGNAL_BUY && g_smc.Confluence().GetBuyZone(zone))
          score = zone.totalScore;
-      else if(signal == SIGNAL_SELL && g_smc.Confluence()->GetSellZone(zone))
+      else if(signal == SIGNAL_SELL && g_smc.Confluence().GetSellZone(zone))
          score = zone.totalScore;
      }
    scoreText += DoubleToString(score, 2);
@@ -470,7 +472,7 @@ void DrawDashboard()
    string kzText = "Kill Zone: ";
    if(g_smc.KZ() != NULL)
      {
-      if(g_smc.KZ()->IsInKillZone())
+      if(g_smc.KZ().IsInKillZone())
          kzText += "YES";
       else
          kzText += "NO";
