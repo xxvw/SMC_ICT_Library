@@ -9,6 +9,7 @@ from pathlib import Path
 
 from read_snapshot import (
     SnapshotError,
+    format_price,
     load_snapshot,
     main,
     render_snapshot,
@@ -43,6 +44,33 @@ class SnapshotTests(unittest.TestCase):
         snapshot["future_field"] = {"anything": True}
         snapshot["records"][0]["future_field"] = [1, 2]
         validate_snapshot(snapshot)
+
+    def test_optional_message_has_a_string_type_when_present(self):
+        for message in ("", "History is unavailable"):
+            snapshot = deepcopy(self.snapshot)
+            snapshot["message"] = message
+            validate_snapshot(snapshot)
+        for message in (None, 1, False, [], {}):
+            with self.subTest(message=message), self.assertRaises(SnapshotError):
+                snapshot = deepcopy(self.snapshot)
+                snapshot["message"] = message
+                validate_snapshot(snapshot)
+
+    def test_binary64_prices_round_ties_to_even_and_normalize_zero(self):
+        cases = [
+            (0.001953125, "0.00195312"), (-0.001953125, "-0.00195312"),
+            (0.005859375, "0.00585938"), (-0.005859375, "-0.00585938"),
+            (1.000000005, "1.00000000"), (-1.000000005, "-1.00000000"),
+            (0.0, "0.00000000"), (-0.0, "0.00000000"),
+            (1e-12, "0.00000000"), (-1e-12, "0.00000000"),
+            (1e21, "1000000000000000000000.00000000"),
+            (1e100, str(int(1e100)) + ".00000000"),
+            (float.fromhex("0x1.fffffffffffffp+1023"),
+             str((2**53 - 1) * 2**971) + ".00000000"),
+        ]
+        for value, expected in cases:
+            with self.subTest(value=value):
+                self.assertEqual(format_price(value), expected)
 
     def test_rejects_malformed_contract(self):
         mutations = [

@@ -26,7 +26,9 @@ successful detection results.
 
 Output begins with snapshot status, symbol, timeframe, broker time, and time
 basis. Subsequent lines are sorted by ID and contain tab-separated ID, concept,
-direction, state, lower price, and upper price. Prices use eight decimal places.
+direction, state, lower price, and upper price. Prices use eight decimal places,
+rounding the exact IEEE 754 binary64 value to nearest with ties to even. Values
+that round to zero are always printed as `0.00000000`, without a negative sign.
 Filters are optional and case sensitive. Broker timestamps have no UTC suffix
 and must not be interpreted as UTC without the broker's timezone information.
 
