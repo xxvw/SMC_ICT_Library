@@ -31,6 +31,7 @@ private:
    int               m_breakerCount;
    int               m_mitigationCount;
    int               m_maxBlocks;
+   int               m_maxAge;
 
    //--- 描画色
    color             m_colorBreaker;
@@ -46,6 +47,15 @@ public:
                           CSmcMarketStructure *structure = NULL);
    virtual bool      Update();
    virtual void      Clean();
+
+   void              SetMaxBlocks(const int maxRecords)
+     {
+      m_maxBlocks = MathMax(1, maxRecords);
+      ArrayResize(m_breakerBlocks, m_maxBlocks);
+      ArrayResize(m_mitigationBlocks, m_maxBlocks);
+      m_breakerCount = 0; m_mitigationCount = 0;
+     }
+   void              SetMaxAge(const int age) { m_maxAge = MathMax(0, age); }
 
    //--- Breaker Blocks
    int               GetBreakerCount() const { return m_breakerCount; }
@@ -63,6 +73,8 @@ private:
    void              DetectBreakerBlocks();
    void              DetectMitigationBlocks();
    void              UpdateStates();
+   void              AddNewest(SmcZone &zones[], int &count, const SmcZone &zone);
+   void              AddBreaker(const SmcZone &ob);
    void              DrawBlocks();
   };
 
@@ -74,6 +86,7 @@ CSmcBreakerBlock::CSmcBreakerBlock()
    , m_breakerCount(0)
    , m_mitigationCount(0)
    , m_maxBlocks(15)
+   , m_maxAge(200)
    , m_colorBreaker(C'150,0,200')
    , m_colorMitigation(C'200,150,0')
   {
@@ -92,22 +105,31 @@ bool CSmcBreakerBlock::Init(const string symbol, const ENUM_TIMEFRAMES timeframe
                             const bool enableDraw, CSmcOrderBlock *orderBlock,
                             CSmcMarketStructure *structure)
   {
+   m_breakerCount = 0; m_mitigationCount = 0;
    if(!CSmcBase::Init(symbol, timeframe, enableDraw))
       return false;
 
-   m_prefix = "SMC_BRK_";
+   SetModulePrefix("BRK");
+   m_breakerCount = 0;
+   m_mitigationCount = 0;
+   bool keepOwned = m_ownOB && m_orderBlock == orderBlock && orderBlock != NULL;
+   if(m_ownOB && m_orderBlock != NULL && !keepOwned)
+      delete m_orderBlock;
+   m_orderBlock = keepOwned ? orderBlock : NULL;
+   m_structure = NULL;
+   m_ownOB = keepOwned;
 
    if(orderBlock != NULL)
      {
       m_orderBlock = orderBlock;
       m_structure  = (structure != NULL) ? structure : orderBlock.Structure();
-      m_ownOB      = false;
+      m_ownOB      = keepOwned;
      }
    else
      {
       m_orderBlock = new CSmcOrderBlock();
-      if(!m_orderBlock.Init(symbol, timeframe, false))
-        { delete m_orderBlock; m_orderBlock = NULL; return false; }
+      if(!m_orderBlock.Init(symbol, timeframe, false, structure))
+        { delete m_orderBlock; m_orderBlock = NULL; m_initialized = false; return false; }
       m_structure = m_orderBlock.Structure();
       m_ownOB     = true;
      }
@@ -121,14 +143,19 @@ bool CSmcBreakerBlock::Init(const string symbol, const ENUM_TIMEFRAMES timeframe
 //+------------------------------------------------------------------+
 bool CSmcBreakerBlock::Update()
   {
-   if(!m_initialized || m_orderBlock == NULL)
+   if(m_enableDraw)
+      CSmcDrawing::DeleteObjectsByPrefix(m_prefix);
+   m_breakerCount = 0;
+   m_mitigationCount = 0;
+   if(!m_initialized || m_orderBlock == NULL || !PrepareRates(524))
       return false;
 
    if(m_ownOB)
-      m_orderBlock.Update();
-
-   m_breakerCount    = 0;
-   m_mitigationCount = 0;
+     {
+      m_orderBlock.SetRates(m_rates);
+      if(!m_orderBlock.Update())
+         return false;
+     }
 
    DetectBreakerBlocks();
    DetectMitigationBlocks();
@@ -187,69 +214,87 @@ bool CSmcBreakerBlock::GetMitigationBlock(const int index, SmcZone &zone) const
 //+------------------------------------------------------------------+
 void CSmcBreakerBlock::DetectBreakerBlocks()
   {
-//--- Bearish OBがブレイクされた -> Bullish Breaker Block
-   for(int i = 0; i < m_orderBlock.GetBearishCount() && m_breakerCount < m_maxBlocks; i++)
+   for(int i = 0; i < m_orderBlock.GetBearishCount(); i++)
      {
       SmcZone ob;
-      m_orderBlock.GetBearishOB(i, ob);
-
-      if(ob.state == ZONE_BROKEN && ob.isValid)
-        {
-         SmcZone breaker = ob;
-         breaker.isBullish = true;  // 方向反転
-         breaker.state     = ZONE_FRESH;
-         breaker.score     = 0.7;
-         m_breakerBlocks[m_breakerCount] = breaker;
-         m_breakerCount++;
-        }
+      if(m_orderBlock.GetBearishOB(i, ob))
+         AddBreaker(ob);
      }
-
-//--- Bullish OBがブレイクされた -> Bearish Breaker Block
-   for(int i = 0; i < m_orderBlock.GetBullishCount() && m_breakerCount < m_maxBlocks; i++)
+   for(int i = 0; i < m_orderBlock.GetBullishCount(); i++)
      {
       SmcZone ob;
-      m_orderBlock.GetBullishOB(i, ob);
-
-      if(ob.state == ZONE_BROKEN && ob.isValid)
-        {
-         SmcZone breaker = ob;
-         breaker.isBullish = false;  // 方向反転
-         breaker.state     = ZONE_FRESH;
-         breaker.score     = 0.7;
-         m_breakerBlocks[m_breakerCount] = breaker;
-         m_breakerCount++;
-        }
+      if(m_orderBlock.GetBullishOB(i, ob))
+         AddBreaker(ob);
      }
   }
 
-//+------------------------------------------------------------------+
-//| Mitigation Block検出: テスト済みOBのゾーン                         |
+void CSmcBreakerBlock::AddBreaker(const SmcZone &ob)
+  {
+   // BROKEN source OBs are intentionally invalid for entry, but remain history.
+   if(ob.state != ZONE_BROKEN || ob.isExpired || ob.brokenTime <= 0)
+      return;
+   int activation = -1;
+   for(int bar = 1; bar < RatesCount(); bar++)
+      if(Time(bar) == ob.brokenTime)
+        {
+         activation = bar;
+         break;
+        }
+   if(activation < 1)
+      return;
+
+   SmcZone breaker = ob;
+   breaker.sourceFormationTime = ob.formationTime;
+   breaker.sourceConfirmedTime = ob.confirmedTime;
+   breaker.formationTime = ob.brokenTime;
+   breaker.formationBar = activation;
+   breaker.confirmedTime = ob.brokenTime;
+   breaker.confirmedBar = activation;
+   breaker.brokenTime = 0;
+   breaker.isBullish = !ob.isBullish;
+   breaker.state = ZONE_FRESH;
+   breaker.isValid = true;
+   breaker.isExpired = false;
+   breaker.age = activation - 1;
+   breaker.score = 0.7;
+   AddNewest(m_breakerBlocks, m_breakerCount, breaker);
+  }
+
+// Retain the newest records across both directions in chronological getter order.
+void CSmcBreakerBlock::AddNewest(SmcZone &zones[], int &count, const SmcZone &zone)
+  {
+   int position = 0;
+   while(position < count && zones[position].confirmedTime >= zone.confirmedTime)
+      position++;
+   if(position >= m_maxBlocks)
+      return;
+   int last = MathMin(count, m_maxBlocks - 1);
+   for(int i = last; i > position; i--)
+      zones[i] = zones[i - 1];
+   zones[position] = zone;
+   if(count < m_maxBlocks)
+      count++;
+  }
+
 //+------------------------------------------------------------------+
 void CSmcBreakerBlock::DetectMitigationBlocks()
   {
-   for(int i = 0; i < m_orderBlock.GetBullishCount() && m_mitigationCount < m_maxBlocks; i++)
+   for(int direction = 0; direction < 2; direction++)
      {
-      SmcZone ob;
-      m_orderBlock.GetBullishOB(i, ob);
-      if(ob.state == ZONE_TESTED || ob.state == ZONE_MITIGATED)
+      int count = direction == 0 ? m_orderBlock.GetBullishCount() : m_orderBlock.GetBearishCount();
+      for(int i = 0; i < count; i++)
         {
-         m_mitigationBlocks[m_mitigationCount] = ob;
-         m_mitigationBlocks[m_mitigationCount].state = ZONE_MITIGATED;
-         m_mitigationBlocks[m_mitigationCount].score = 0.5;
-         m_mitigationCount++;
-        }
-     }
-
-   for(int i = 0; i < m_orderBlock.GetBearishCount() && m_mitigationCount < m_maxBlocks; i++)
-     {
-      SmcZone ob;
-      m_orderBlock.GetBearishOB(i, ob);
-      if(ob.state == ZONE_TESTED || ob.state == ZONE_MITIGATED)
-        {
-         m_mitigationBlocks[m_mitigationCount] = ob;
-         m_mitigationBlocks[m_mitigationCount].state = ZONE_MITIGATED;
-         m_mitigationBlocks[m_mitigationCount].score = 0.5;
-         m_mitigationCount++;
+         SmcZone ob;
+         bool found = direction == 0 ? m_orderBlock.GetBullishOB(i, ob) :
+                                       m_orderBlock.GetBearishOB(i, ob);
+         if(!found || !ob.IsActive())
+            continue;
+         if(ob.state == ZONE_MITIGATED)
+           {
+            ob.state = ZONE_MITIGATED;
+            ob.score = 0.5;
+            AddNewest(m_mitigationBlocks, m_mitigationCount, ob);
+           }
         }
      }
   }
@@ -257,30 +302,38 @@ void CSmcBreakerBlock::DetectMitigationBlocks()
 //+------------------------------------------------------------------+
 void CSmcBreakerBlock::UpdateStates()
   {
-   double bid = SymbolInfoDouble(m_symbol, SYMBOL_BID);
-
+   double tick = m_tickSize > 0 ? m_tickSize : m_point;
    for(int i = 0; i < m_breakerCount; i++)
      {
-      if(!m_breakerBlocks[i].isValid)
-         continue;
-
-      //--- テスト判定
-      if(bid >= m_breakerBlocks[i].bottomPrice && bid <= m_breakerBlocks[i].topPrice)
+      for(int bar = m_breakerBlocks[i].confirmedBar - 1; bar >= 1; bar--)
         {
+         if(m_breakerBlocks[i].confirmedBar - bar > m_maxAge)
+           {
+            m_breakerBlocks[i].isExpired = true;
+            m_breakerBlocks[i].isValid = false;
+            break;
+           }
+         bool broken = m_breakerBlocks[i].isBullish ?
+            Close(bar) <= NormalizePrice(m_breakerBlocks[i].bottomPrice - tick) :
+            Close(bar) >= NormalizePrice(m_breakerBlocks[i].topPrice + tick);
+         if(broken)
+           {
+            m_breakerBlocks[i].state = ZONE_BROKEN;
+            m_breakerBlocks[i].brokenTime = Time(bar);
+            m_breakerBlocks[i].isValid = false;
+            break;
+           }
+         bool touched = Low(bar) <= m_breakerBlocks[i].topPrice &&
+                        High(bar) >= m_breakerBlocks[i].bottomPrice;
+         if(!touched)
+            continue;
          if(m_breakerBlocks[i].state == ZONE_FRESH)
             m_breakerBlocks[i].state = ZONE_TESTED;
-        }
-
-      //--- ブレイク判定
-      if(m_breakerBlocks[i].isBullish && bid < m_breakerBlocks[i].bottomPrice)
-        {
-         if(m_breakerBlocks[i].state == ZONE_TESTED)
-            m_breakerBlocks[i].state = ZONE_BROKEN;
-        }
-      if(!m_breakerBlocks[i].isBullish && bid > m_breakerBlocks[i].topPrice)
-        {
-         if(m_breakerBlocks[i].state == ZONE_TESTED)
-            m_breakerBlocks[i].state = ZONE_BROKEN;
+         bool midpoint = m_breakerBlocks[i].isBullish ?
+            Low(bar) <= m_breakerBlocks[i].GetCenter() :
+            High(bar) >= m_breakerBlocks[i].GetCenter();
+         if(midpoint)
+            m_breakerBlocks[i].state = ZONE_MITIGATED;
         }
      }
   }
