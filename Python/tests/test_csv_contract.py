@@ -1,6 +1,9 @@
 """Interoperability checks for MT5 CSV exports and the legacy loader API."""
 
+import importlib.util
+import io
 import subprocess
+from contextlib import redirect_stdout
 import sys
 import tempfile
 import unittest
@@ -163,6 +166,60 @@ class Mt5ContractTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     DataLoader.load_from_mt5("TEST", "H1", 3)
             terminal.shutdown.assert_called_once()
+
+
+class TrainingFeatureContractTests(unittest.TestCase):
+    def test_csv_and_terminal_sources_keep_identical_training_inputs(self):
+        count = 100
+        index = np.arange(count)
+        opening = 100.0 + index * 0.1
+        close = opening + np.sin(index) * 0.2
+        frame = pd.DataFrame({
+            "datetime": pd.date_range("2026-01-01", periods=count, freq="h"),
+            "open": opening,
+            "high": np.maximum(opening, close) + 1,
+            "low": np.minimum(opening, close) - 1,
+            "close": close,
+            "volume": 100 + index,
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bars.csv"
+            frame.to_csv(path, index=False)
+            csv_frame = DataLoader.load_from_csv(path)
+        terminal_frame = frame.rename(columns={"volume": "tick_volume"})
+        terminal_frame["time"] = terminal_frame.pop("datetime").astype("int64") // 10**9
+        terminal = Mock()
+        terminal.initialize.return_value = True
+        terminal.copy_rates_from_pos.return_value = terminal_frame.to_records(index=False)
+        with patch.object(data_loader, "_MT5_AVAILABLE", True), patch.object(data_loader, "mt5", terminal, create=True):
+            mt5_frame = DataLoader.load_from_mt5("TEST", "H1", count)
+
+        class TrainingReached(Exception):
+            pass
+
+        for script, optimizer in (("01_trend_classifier.py", "optimize_lgbm"),
+                                  ("07_volatility_regime.py", "optimize_rf")):
+            with self.subTest(script=script):
+                source = Path(__file__).resolve().parents[1] / script
+                spec = importlib.util.spec_from_file_location(source.stem, source)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                inputs = []
+                for source_frame in (csv_frame, mt5_frame):
+                    trainer = Mock()
+                    getattr(trainer, optimizer).side_effect = TrainingReached
+                    with patch.object(module.DataLoader, "load", return_value=source_frame.copy()), \
+                         patch.object(module, "ModelTrainer", return_value=trainer), \
+                         redirect_stdout(io.StringIO()), self.assertRaises(TrainingReached):
+                        module.main()
+                    inputs.append(getattr(trainer, optimizer).call_args.args[0])
+                self.assertGreater(len(inputs[0]), 0)
+                pd.testing.assert_frame_equal(inputs[0], inputs[1])
+                for metadata in ("volume", "tick_volume", "datetime", "label"):
+                    self.assertNotIn(metadata, inputs[0].columns)
+                if script.startswith("07"):
+                    self.assertIn("vol_ratio", inputs[0].columns)
+                    self.assertNotIn("ret_1", inputs[0].columns)
 
 
 class OptionalDependenciesTests(unittest.TestCase):

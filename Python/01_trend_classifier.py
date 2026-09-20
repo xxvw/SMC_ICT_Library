@@ -100,9 +100,10 @@ def main():
     df = create_features(df)
     df["label"] = create_labels(df)
     df.dropna(inplace=True)
-    feature_cols = [c for c in df.columns if c not in ["open", "high", "low", "close",
-                                                         "tick_volume", "real_volume",
-                                                         "spread", "time", "label"]]
+    feature_cols = [
+        column for column in FeatureEngineer.get_feature_names(df)
+        if column not in ("time", "label")
+    ]
     X, y = df[feature_cols], df["label"]
     print(f"[FEAT]  {len(feature_cols)} features, {len(X):,} samples")
     print(f"[DIST]  {dict(y.value_counts().sort_index())}")
