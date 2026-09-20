@@ -260,6 +260,22 @@ class ReferenceOutputTests(unittest.TestCase):
             "status=NOT_READY symbol=EURUSD timeframe=M5 as_of=null time_basis=broker\n",
         )
 
+    def test_reference_rounds_binary64_ties_to_even_and_normalizes_zero(self):
+        cases = [
+            (0.001953125, "0.00195312"), (-0.001953125, "-0.00195312"),
+            (0.005859375, "0.00585938"), (-0.005859375, "-0.00585938"),
+            (1.000000005, "1.00000000"), (-1.000000005, "-1.00000000"),
+            (-0.0, "0.00000000"), (-1e-12, "0.00000000"),
+            (1e21, "1000000000000000000000.00000000"),
+            (9007199254740993, "9007199254740992.00000000"),
+        ]
+        for value, expected in cases:
+            snapshot = self.snapshot | {"records": [self.snapshot["records"][0] |
+                        {"lower": value, "upper": value}]}
+            with self.subTest(value=value):
+                prices = check_examples.expected_output(snapshot).splitlines()[1].split("\t")[-2:]
+                self.assertEqual(prices, [expected, expected])
+
 
 if __name__ == "__main__":
     unittest.main()
