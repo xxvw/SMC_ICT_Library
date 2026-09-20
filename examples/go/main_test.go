@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -171,5 +173,53 @@ func TestSharedFixture(t *testing.T) {
 	}
 	if out.String() != string(want) {
 		t.Fatalf("fixture output mismatch: got %q; want %q", out.String(), want)
+	}
+}
+
+func TestFormatPrice(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value float64
+		want  string
+	}{
+		{"positive tie", 0.001953125, "0.00195312"},
+		{"negative tie", -0.001953125, "-0.00195312"},
+		{"positive near tie", 1.000000005, "1.00000000"},
+		{"negative near tie", -1.000000005, "-1.00000000"},
+		{"zero", 0, "0.00000000"},
+		{"negative zero", math.Copysign(0, -1), "0.00000000"},
+		{"small negative", -1e-12, "0.00000000"},
+		{"large", 1e21, "1000000000000000000000.00000000"},
+		{"huge", 1e100, "10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.00000000"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := formatPrice(test.value); got != test.want {
+				t.Fatalf("formatPrice(%g) = %q; want %q", test.value, got, test.want)
+			}
+		})
+	}
+	maximum := formatPrice(math.MaxFloat64)
+	if strings.ContainsAny(maximum, "eE") || !strings.HasSuffix(maximum, ".00000000") {
+		t.Fatalf("maximum finite price is not fixed point: %q", maximum)
+	}
+	if parsed, err := strconv.ParseFloat(maximum, 64); err != nil || parsed != math.MaxFloat64 {
+		t.Fatalf("maximum finite price does not round-trip: %q, %v", maximum, err)
+	}
+}
+
+func TestOptionalMessage(t *testing.T) {
+	for _, message := range []any{"", "History is loading"} {
+		root := document(t)
+		root["message"] = message
+		if _, err := readSnapshot(strings.NewReader(encode(t, root))); err != nil {
+			t.Fatalf("string message rejected: %v", err)
+		}
+	}
+	for _, message := range []any{nil, true, 1, []any{}, map[string]any{}} {
+		root := document(t)
+		root["message"] = message
+		if _, err := readSnapshot(strings.NewReader(encode(t, root))); err == nil {
+			t.Fatalf("invalid message accepted: %#v", message)
+		}
 	}
 }
