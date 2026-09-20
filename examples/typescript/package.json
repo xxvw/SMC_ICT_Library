@@ -1,0 +1,19 @@
+{
+  "name": "smc-ict-snapshot-example",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Read exported MT5 ICT snapshots without trading or running detectors",
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "start": "node dist/read_snapshot.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.2",
+    "typescript": "7.0.2"
+  }
+}
