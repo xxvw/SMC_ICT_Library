@@ -7,13 +7,14 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
 
 import java.io.IOException;
 import java.io.PrintStream;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 /** Reads the MT5 snapshot contract. Detection remains in the MQL5 library. */
@@ -66,12 +67,18 @@ public final class SnapshotReader {
                     .append(record.get("concept").textValue()).append('\t')
                     .append(record.get("direction").textValue()).append('\t')
                     .append(record.get("state").textValue()).append('\t')
-                    .append(String.format(Locale.ROOT, "%.8f", record.get("lower").doubleValue()))
+                    .append(formatPrice(record.get("lower").doubleValue()))
                     .append('\t')
-                    .append(String.format(Locale.ROOT, "%.8f", record.get("upper").doubleValue()))
+                    .append(formatPrice(record.get("upper").doubleValue()))
                     .append('\n');
         }
         return output.toString();
+    }
+
+    private static String formatPrice(double value) {
+        // Construct from the exact binary64 value, not its shortest decimal string.
+        BigDecimal rounded = new BigDecimal(value).setScale(8, RoundingMode.HALF_EVEN);
+        return rounded.signum() == 0 ? "0.00000000" : rounded.toPlainString();
     }
 
     private record Options(Path path, String concept, String direction) {

@@ -21,11 +21,15 @@ filters are applied, so an invalid excluded record still causes an error.
 The first output line reports `status`, `symbol`, `timeframe`, `as_of` and
 `time_basis`. Following lines are sorted by record ID and contain tab-separated
 `id`, `concept`, `direction`, `state`, `lower`, and `upper`; prices always have
-eight decimal places. Broker timestamps remain unconverted: they do not imply
+eight decimal places. Each price is read as an IEEE 754 binary64 value and its
+exact binary value is rounded to eight decimal places using nearest rounding
+with ties to even. Negative zero, including negative values that round to zero,
+is displayed as `0.00000000`. Broker timestamps remain unconverted: they do not imply
 UTC or the computer's local timezone. An unavailable `as_of` prints as `null`.
 
 Only schema major version 1 is accepted. Required fields, nested objects,
 types, enum values, timestamps, numeric limits, and price ordering are checked.
+The optional top-level `message` must be a string when present.
 Additional fields are accepted for forward compatibility. Malformed JSON,
 invalid data, missing files, or incorrect arguments produce a diagnostic on
 stderr and exit code 2; no partial summary is printed. Valid snapshots return

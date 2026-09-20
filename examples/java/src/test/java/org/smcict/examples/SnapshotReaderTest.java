@@ -69,6 +69,40 @@ final class SnapshotReaderTest {
                 SnapshotReader.render(snapshot, null, null));
     }
 
+    @TestFactory Stream<DynamicTest> pricesRoundExactBinary64WithTiesToEven() {
+        String[][] cases = {
+                {"0.001953125", "0.00195312"}, {"-0.001953125", "-0.00195312"},
+                {"0.005859375", "0.00585938"}, {"-0.005859375", "-0.00585938"},
+                {"1.000000005", "1.00000000"}, {"-1.000000005", "-1.00000000"},
+                {"0.0", "0.00000000"}, {"-0.0", "0.00000000"},
+                {"-0.000000001", "0.00000000"}
+        };
+        return Stream.of(cases).map(test -> DynamicTest.dynamicTest("price " + test[0], () -> {
+            var snapshot = fixture();
+            ObjectNode record = (ObjectNode) snapshot.at("/records/0");
+            JsonNode price = SnapshotReader.JSON.readTree(test[0]);
+            record.set("lower", price);
+            record.set("upper", price);
+            SnapshotValidation.validate(snapshot);
+            String line = SnapshotReader.render(snapshot, "MSS", null).lines().skip(1).findFirst().orElseThrow();
+            assertEquals("mss-001\tMSS\tbearish\tCONFIRMED\t" + test[1] + "\t" + test[1], line);
+        }));
+    }
+
+    @Test void optionalTopLevelMessageMustBeAString() throws IOException {
+        var snapshot = fixture();
+        snapshot.remove("message");
+        assertDoesNotThrow(() -> SnapshotValidation.validate(snapshot));
+        snapshot.put("message", "Waiting for broker history");
+        assertDoesNotThrow(() -> SnapshotValidation.validate(snapshot));
+        snapshot.put("message", "");
+        assertDoesNotThrow(() -> SnapshotValidation.validate(snapshot));
+        for (String invalid : List.of("null", "0", "false", "[]", "{}")) {
+            snapshot.set("message", SnapshotReader.JSON.readTree(invalid));
+            assertThrows(IllegalArgumentException.class, () -> SnapshotValidation.validate(snapshot));
+        }
+    }
+
     @TestFactory Stream<DynamicTest> everyRequiredFieldIsChecked() throws IOException {
         List<DynamicTest> tests = new ArrayList<>();
         for (String path : List.of("", "/config", "/config/sessions/0", "/modules/0", "/records/0")) {
