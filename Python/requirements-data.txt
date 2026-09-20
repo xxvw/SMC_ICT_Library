@@ -1,0 +1,3 @@
+# Portable CSV loading and feature preparation; no MT5 terminal or ML runtime.
+pandas>=2.0.0
+numpy>=1.24.0

@@ -1,15 +1,6 @@
-MetaTrader5>=5.0.45
-pandas>=2.0.0
-numpy>=1.24.0
-scikit-learn>=1.3.0
-lightgbm>=4.0.0
-xgboost>=2.0.0
-optuna>=3.4.0
-onnx>=1.15.0
-onnxruntime>=1.16.0
-onnxmltools>=1.12.0
-skl2onnx>=1.16.0
-tensorflow>=2.15.0
-tf2onnx>=1.16.0
-matplotlib>=3.7.0
-seaborn>=0.13.0
+# Compatibility install for all existing training entry points.
+# CSV-only users: pip install -r Python/requirements-data.txt
+# Model training: pip install -r Python/requirements-ml.txt
+# Optional Windows terminal connection: requirements-mt5.txt
+-r requirements-ml.txt
+-r requirements-mt5.txt

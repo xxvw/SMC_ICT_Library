@@ -11,14 +11,28 @@ Modules:
     model_utils   - Model training, hyperparameter optimization, ONNX export
 """
 
+from importlib import import_module
+
 from common.paths import default_model_dir, resolve_output_dir
 
-try:
-    from common.data_loader import DataLoader
-    from common.feature_base import FeatureEngineer
-    from common.model_utils import ModelTrainer
-except ImportError:
-    DataLoader = FeatureEngineer = ModelTrainer = None
+_EXPORT_MODULES = {
+    "DataLoader": "common.data_loader",
+    "FeatureEngineer": "common.feature_base",
+    "ModelTrainer": "common.model_utils",
+}
+
+
+def __getattr__(name):
+    """Load independent public helpers without requiring optional ML packages."""
+    if name not in _EXPORT_MODULES:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(_EXPORT_MODULES[name]), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_EXPORT_MODULES))
 
 __all__ = [
     "DataLoader",
