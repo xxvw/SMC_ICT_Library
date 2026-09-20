@@ -1,0 +1,5 @@
+# Local validation only. MT5 connection and model training are separate installs.
+numpy>=1.24,<3
+pandas>=2.0,<4
+scikit-learn>=1.3,<2
+ruff>=0.6,<1

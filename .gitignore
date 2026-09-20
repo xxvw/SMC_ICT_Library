@@ -52,3 +52,6 @@ data/
 # Logs
 *.log
 logs/
+
+# Local validation reports (never copy success between commits)
+.validation/
