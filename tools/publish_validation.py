@@ -10,20 +10,32 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
-from check_all import PROFILES, REQUIRED_PROFILE, ROOT, git, require_clean
+from check_all import (REPORT_SCHEMA_VERSION, REQUIRED_PROFILE, ROOT, git,
+                       normalized_command, profile_commands, profile_fingerprint, require_clean,
+                       verify_end_to_end_evidence)
 
 
 def verify_report(report: dict, head: str, base: str, pull: dict) -> None:
-    if report.get("schema_version") != 1 or report.get("profile") != REQUIRED_PROFILE:
+    if report.get("schema_version") != REPORT_SCHEMA_VERSION or report.get("profile") != REQUIRED_PROFILE:
         raise ValueError(f"A current {REQUIRED_PROFILE} validation report is required.")
     if report.get("success") is not True or report.get("completed") is not True:
         raise ValueError("Validation failed or did not complete.")
-    expected = [name for name, _ in PROFILES[REQUIRED_PROFILE]]
+    expected_commands = profile_commands(ROOT, REQUIRED_PROFILE)
+    expected = [name for name, _ in expected_commands]
     checks = report.get("checks", [])
     if [check.get("name") for check in checks] != expected:
         raise ValueError("The report does not contain every required check.")
     if any(check.get("success") is not True or check.get("returncode") != 0 for check in checks):
         raise ValueError("A required check failed or was not run.")
+    if report.get("profile_fingerprint") != profile_fingerprint(ROOT, REQUIRED_PROFILE):
+        raise ValueError("The required profile or validation tools changed; rerun full validation.")
+    for check, (_, command) in zip(checks, expected_commands):
+        if normalized_command(check.get("command", [])) != normalized_command(command):
+            raise ValueError("A check used different command arguments; rerun full validation.")
+        if check["name"] == "mt5-examples":
+            verify_end_to_end_evidence(check.get("evidence"))
+    if not isinstance(report.get("environment"), dict) or not report["environment"].get("python"):
+        raise ValueError("The report has no Python runtime version evidence.")
     if report.get("commit_sha") != head or pull.get("head", {}).get("sha") != head:
         raise ValueError("Tested commit, local HEAD, and pushed PR head must match.")
     if report.get("base_sha") != base or pull.get("base", {}).get("sha") != base:
