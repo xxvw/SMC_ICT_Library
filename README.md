@@ -1,237 +1,95 @@
-# SMC/ICT Concepts Library for MQL5
+# SMC/ICT Library for MetaTrader 5
 
-**Smart Money Concepts (SMC) / Inner Circle Trader (ICT) の概念をMQL5で実装したオープンソースライブラリ**
+[English](README.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md) · [Español](README.es.md)
 
-An open-source MQL5 library implementing Smart Money Concepts (SMC) and Inner Circle Trader (ICT) methodologies, with integrated currency strength analysis, volatility (VIX) calculation, trading utilities, and 15 ONNX machine learning training scripts.
+An MIT-licensed MQL5 library for detecting and retrieving Smart Money Concepts (SMC) and Inner Circle Trader (ICT) patterns in MT5. Use typed snapshots inside an EA or read the same results as JSON from Python, TypeScript, C#, Go, Java, or Rust.
 
----
+Detection uses closed candles and broker time. Numerical rules are explicit, configurable project definitions; see [detection rules](docs/ICT_RULES.md).
 
-## Features / 機能一覧
+## What is included
 
-### SMC/ICT Core Concepts
+| Area | Capabilities |
+| --- | --- |
+| Structure and zones | Confirmed swings, BOS, CHoCH, order blocks, FVG, breaker blocks, liquidity, premium/discount, OTE, and sessions |
+| Additional ICT patterns | Displacement, MSS, IFVG, BPR, previous-day/week and completed-session highs/lows, broker daily/weekly opening gaps, SMT divergence, and Power of Three |
+| Data access | `SmcConfig`, `SmcSnapshot`, per-concept readiness, stable record IDs, lifecycle states, UTF-8 JSON, and existing CSV export |
+| Examples | A snapshot-export EA that places no orders; six external-language JSON readers; existing visualizer and sample trading EA |
+| Optional analysis | Currency strength, historical-volatility analysis, Python training scripts, and ONNX utilities |
 
-| Module | Description |
-|--------|-------------|
-| **SwingPoints** | スイングハイ/ロー検出 (両側確認方式) |
-| **MarketStructure** | BOS (Break of Structure) / CHoCH (Change of Character) / トレンド・レンジ分析 |
-| **OrderBlock** | オーダーブロック検出・状態管理 (FRESH/TESTED/MITIGATED/BROKEN) |
-| **FairValueGap** | FVG (Fair Value Gap) / インバランス検出 (3本ローソク足パターン) |
-| **Liquidity** | Equal Highs/Lows、流動性プール、流動性スイープ検出 |
-| **PremiumDiscount** | Premium / Discount / Equilibrium ゾーン |
-| **OptimalTradeEntry** | OTE (Fibonacci 0.618-0.786 ベースエントリーゾーン) |
-| **KillZone** | ICT Kill Zones (Asian / London / New York / Overlap セッション) |
-| **BreakerBlock** | Breaker Block / Mitigation Block |
-| **ConfluenceDetector** | 複合コンフルエンス判定 (全要素のスコアリング) |
+## Start in MT5
 
-### Analysis Modules
+1. In MT5, choose **File → Open Data Folder**.
+2. Copy `Include/SMC/` into `MQL5/Include/SMC/` and `Experts/SMC_Snapshot_Export.mq5` into `MQL5/Experts/`.
+3. Compile the export EA in MetaEditor, attach it to a chart, and inspect its Experts log. It exports a new snapshot when a candle closes without placing trades.
+4. Read the JSON file in MT5's shared `Terminal/Common/Files/` directory with one of the examples below.
 
-| Module | Description |
-|--------|-------------|
-| **CurrencyStrength** | 8主要通貨 (USD, EUR, GBP, JPY, AUD, CAD, NZD, CHF) の相対強弱分析 |
-| **VIXCalculator** | ヒストリカルボラティリティベースの VIX 相当値計算 |
-
-### Utilities
-
-| Module | Description |
-|--------|-------------|
-| **TradeUtils** | ロット計算、スプレッドフィルター、トレード可否チェック |
-| **TimeUtils** | GMT変換、新バー検出、サマータイム判定 |
-| **MathUtils** | 標準偏差、Zスコア、相関、線形回帰、パーセンタイル |
-| **ArrayUtils** | 配列操作テンプレート関数 |
-| **Logger** | レベル付きログ出力 (DEBUG/INFO/WARN/ERROR) |
-| **DataExporter** | ML学習用CSVデータエクスポート |
-| **OnnxWrapper** | 汎用ONNX推論ラッパー |
-
-### Python ML Training Scripts (15 scripts)
-
-| # | Script | Model | Purpose |
-|---|--------|-------|---------|
-| 01 | trend_classifier | LightGBM | トレンド方向分類 (Bullish/Bearish/Ranging) |
-| 02 | fvg_fill_predictor | XGBoost | FVG充填確率予測 |
-| 03 | ob_quality_scorer | LightGBM | オーダーブロック品質スコアリング |
-| 04 | bos_choch_detector | LSTM | BOS/CHoCH事前検出 |
-| 05 | liquidity_sweep_predictor | XGBoost | 流動性スイープ予測 |
-| 06 | entry_timing_optimizer | LightGBM | エントリータイミング最適化 |
-| 07 | volatility_regime | RandomForest | ボラティリティレジーム分類 |
-| 08 | session_pattern | LightGBM | セッション別パターン認識 |
-| 09 | mtf_confluence_scorer | XGBoost | マルチTFコンフルエンススコアリング |
-| 10 | price_action_classifier | LSTM | プライスアクションパターン分類 |
-| 11 | currency_strength_predictor | LightGBM | 通貨強弱変化予測 |
-| 12 | sl_tp_optimizer | XGBoost | SL/TP最適配置 |
-| 13 | market_regime_detector | RandomForest | マーケットレジーム検出 |
-| 14 | swing_reversal_predictor | LSTM | スイング反転予測 |
-| 15 | smc_ensemble | Stacking | 全モデル統合アンサンブル |
-
----
-
-## Installation / インストール
-
-### MQL5 Library
-
-1. `Include/SMC/` フォルダをMetaTrader 5の `MQL5/Include/` にコピー
-2. 必要に応じて `Indicators/` と `Experts/` もコピー
-
-```
-MetaTrader 5/
-└── MQL5/
-    ├── Include/
-    │   └── SMC/           ← ここにコピー
-    ├── Indicators/
-    │   └── SMC_Visualizer.mq5
-    └── Experts/
-        └── SMC_Sample_EA.mq5
-```
-
-### Python Environment
-
-```bash
-cd Python/
-pip install -r requirements.txt
-```
-
-軽量なローカル検証だけを実行する場合は、リポジトリルートで以下を実行します。
-
-```bash
-pip install numpy pandas scikit-learn ruff
-python tools/check_python.py
-python tools/check_mql5_static.py
-```
-
----
-
-## Quick Start / クイックスタート
-
-### Basic Usage (単体モジュール)
-
-```cpp
-#include <SMC/FairValueGap.mqh>
-
-CSmcFairValueGap fvg;
-
-int OnInit()
-{
-    fvg.Init(_Symbol, _Period, true);  // 描画有効
-    return INIT_SUCCEEDED;
-}
-
-void OnTick()
-{
-    fvg.Update();
-
-    SmcZone zone;
-    if(fvg.GetNearestBullishFVG(SymbolInfoDouble(_Symbol, SYMBOL_BID), zone))
-    {
-        Print("Nearest Bullish FVG: ", zone.bottomPrice, " - ", zone.topPrice);
-    }
-}
-```
-
-### Full Manager (全モジュール統合)
+For MQL5 integration, initialize a configuration and check both update success and snapshot status:
 
 ```cpp
 #include <SMC/SmcManager.mqh>
 
-CSmcManager *smc;
+CSmcManager smc;
 
 int OnInit()
 {
-    smc = new CSmcManager();
-    smc.Init(_Symbol, _Period, true, true, true);
-    return INIT_SUCCEEDED;
+   SmcConfig config;
+   config.SetDefaults();
+   return smc.Init(_Symbol, _Period, config) ? INIT_SUCCEEDED : INIT_FAILED;
 }
 
 void OnTick()
 {
-    smc.Update();
+   if(!smc.Update())
+      return; // Read GetStatus()/GetSnapshot() for unavailable-module details.
 
-    // トレンド確認
-    if(smc.IsBullish())
-        Print("Bullish Trend");
+   SmcSnapshot snapshot;
+   if(!smc.GetSnapshot(snapshot) || snapshot.status != SMC_STATUS_READY)
+      return;
 
-    // コンフルエンスシグナル
-    ENUM_ENTRY_SIGNAL signal = smc.GetSignal();
-    if(signal == SIGNAL_BUY)
-        Print("BUY Signal with confluence!");
-
-    // 通貨強弱
-    if(smc.CurrStr() != NULL)
-        Print("USD Strength: ", smc.CurrStr().GetStrength("USD"));
-
-    // VIX
-    if(smc.VIX() != NULL)
-        Print("VIX: ", smc.VIX().GetVIX(), " (", smc.VIX().GetVIXLevelName(), ")");
+   for(int i = 0; i < ArraySize(snapshot.records); i++)
+      if(snapshot.records[i].concept == ICT_IFVG)
+         Print(snapshot.records[i].id, " ", snapshot.records[i].state);
 }
 
-void OnDeinit(const int reason)
-{
-    if(smc != NULL) { smc.Clean(); delete smc; }
-}
+void OnDeinit(const int reason) { smc.Clean(); }
 ```
 
-### ML Model Training
+The existing `Init()`, `Update()`, `Clean()`, and getter interfaces remain available. See the [quick start](docs/QUICKSTART.md), [snapshot API](docs/SNAPSHOT_API.md), and [compatibility notes](docs/SNAPSHOT_API.md#compatibility).
 
-```bash
-# リポジトリルート、または Python/ 配下から実行できます。
-cd Python/
+## Read results in another language
 
-# 1. トレンド分類モデルの学習
-python 01_trend_classifier.py
+Each example accepts a snapshot path and optional `--concept IFVG --direction bearish` filters. The readers share a fixture and expected output; detection stays in MQL5.
 
-# 2. アンサンブルモデルの学習 (全モデルの統合)
-python 15_smc_ensemble.py
+| Language | Setup and run instructions |
+| --- | --- |
+| Python | [examples/python](examples/python/README.md) |
+| TypeScript | [examples/typescript](examples/typescript/README.md) |
+| C# | [examples/csharp](examples/csharp/README.md) |
+| Go | [examples/go](examples/go/README.md) |
+| Java | [examples/java](examples/java/README.md) |
+| Rust | [examples/rust](examples/rust/README.md) |
+
+The [data contract](docs/DATA_CONTRACT.md) and [JSON Schema](schemas/snapshot.schema.json) define versioning, timestamps, statuses, and record fields. Broker timestamps have no UTC suffix. Missing history is reported separately from a successful evaluation with no matches.
+
+## Documentation and development
+
+- [Documentation index](docs/README.md), including retained Japanese reference guides.
+- [Detection rules and defaults](docs/ICT_RULES.md).
+- [Local validation and development](docs/DEVELOPMENT.md).
+- [Contributing](CONTRIBUTING.md), [code of conduct](CODE_OF_CONDUCT.md), [security reporting](SECURITY.md), and [changes](CHANGELOG.md).
+
+All changes go through small PRs to `main`, with local validation before squash merge. Commit one completed unit, validate it, and push it before starting another. CI runs locally; GitHub hosted and self-hosted runners are not required.
+
+```sh
+python -m pip install -r requirements-dev.txt
+python tools/setup_hooks.py
+python tools/check_all.py
 ```
 
-学習スクリプトの出力先は実行ディレクトリに依存せず、リポジトリ配下の `Files/models/` に解決されます。
+Full validation also requires MetaEditor/MT5 and the sample-language toolchains; follow the [development guide](docs/DEVELOPMENT.md). Missing tools and interrupted checks fail validation.
 
----
+Python CSV processing, terminal connectivity, and ML training have separate dependency sets. See [quick start: Python](docs/QUICKSTART.md#python-data-and-training).
 
-## Architecture / アーキテクチャ
+## License
 
-```
-SmcTypes (enums/structs)
-  └── SmcBase (base class)
-        └── SmcDrawing (chart objects)
-              ├── SwingPoints (foundation)
-              │     ├── MarketStructure → OrderBlock → BreakerBlock
-              │     ├── Liquidity
-              │     ├── PremiumDiscount
-              │     └── OptimalTradeEntry
-              ├── FairValueGap (independent)
-              └── KillZone (independent)
-
-ConfluenceDetector ← references all modules above
-SmcManager ← owns and orchestrates all modules
-```
-
-### Design Principles / 設計方針
-
-- **Symbol-agnostic**: FX、ゴールド、株式指数など全銘柄対応
-- **Timeframe-agnostic**: 全タイムフレーム対応
-- **Modular**: 各コンセプトは単独使用可能
-- **Unified API**: `Init()` / `Update()` / `Clean()` 共通インターフェース
-- **Optional Drawing**: `enableDraw` フラグで描画ON/OFF
-- **Resource Sharing**: SmcManager は SwingPoints インスタンスを全モジュールで共有
-
----
-
-## Contributing / 貢献
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
----
-
-## License / ライセンス
-
-MIT License - See [LICENSE](LICENSE) for details.
-
----
-
-## Disclaimer / 免責事項
-
-このライブラリは教育・研究目的で提供されています。実際のトレードでの使用は自己責任で行ってください。過去のパフォーマンスは将来の結果を保証するものではありません。
-
-This library is provided for educational and research purposes. Use in live trading is at your own risk. Past performance does not guarantee future results.
+[MIT](LICENSE). The library and examples support research and software development. Pattern detections are data, and do not establish profitability. The existing `SMC_Sample_EA.mq5` can place orders; use `SMC_Snapshot_Export.mq5` for data-only integration.
