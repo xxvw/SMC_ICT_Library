@@ -90,13 +90,19 @@ CSmcPremiumDiscount::~CSmcPremiumDiscount()
 bool CSmcPremiumDiscount::Init(const string symbol, const ENUM_TIMEFRAMES timeframe,
                                const bool enableDraw, CSmcSwingPoints *swingPoints)
   {
+   m_dataValid = false; m_swingHigh = 0; m_swingLow = 0;
+   m_equilibrium = 0; m_currentPrice = 0;
    if(!CSmcBase::Init(symbol, timeframe, enableDraw))
       return false;
 
-   m_prefix = "SMC_PD_";
+   SetModulePrefix("PD");
+   m_dataValid = false;
 
+   bool keepOwned = m_ownSwing && m_swingPoints == swingPoints && swingPoints != NULL;
+   if(m_ownSwing && m_swingPoints != NULL && m_swingPoints != swingPoints)
+     { delete m_swingPoints; m_swingPoints = NULL; m_ownSwing = false; }
    if(swingPoints != NULL)
-     { m_swingPoints = swingPoints; m_ownSwing = false; }
+     { m_swingPoints = swingPoints; m_ownSwing = keepOwned; }
    else
      {
       m_swingPoints = new CSmcSwingPoints();
@@ -110,11 +116,18 @@ bool CSmcPremiumDiscount::Init(const string symbol, const ENUM_TIMEFRAMES timefr
 //+------------------------------------------------------------------+
 bool CSmcPremiumDiscount::Update()
   {
-   if(!m_initialized || m_swingPoints == NULL)
+   if(m_enableDraw)
+      CSmcDrawing::DeleteObjectsByPrefix(m_prefix);
+   m_dataValid = false;
+   m_swingHigh = 0; m_swingLow = 0; m_equilibrium = 0; m_currentPrice = 0;
+   if(!m_initialized || m_swingPoints == NULL || !PrepareRates())
       return false;
 
    if(m_ownSwing)
-      m_swingPoints.Update();
+     {
+      m_swingPoints.SetRates(m_rates);
+      if(!m_swingPoints.Update()) return false;
+     }
 
    Calculate();
 
@@ -172,7 +185,7 @@ void CSmcPremiumDiscount::Calculate()
    m_swingHigh    = m_swingPoints.GetHighPrice(0);
    m_swingLow     = m_swingPoints.GetLowPrice(0);
    m_equilibrium  = (m_swingHigh + m_swingLow) / 2.0;
-   m_currentPrice = SymbolInfoDouble(m_symbol, SYMBOL_BID);
+   m_currentPrice = Close(1);
    m_dataValid    = (m_swingHigh > m_swingLow);
   }
 

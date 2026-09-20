@@ -79,13 +79,18 @@ CSmcOptimalTradeEntry::~CSmcOptimalTradeEntry()
 bool CSmcOptimalTradeEntry::Init(const string symbol, const ENUM_TIMEFRAMES timeframe,
                                  const bool enableDraw, CSmcSwingPoints *swingPoints)
   {
+   m_currentOTE.Init();
    if(!CSmcBase::Init(symbol, timeframe, enableDraw))
       return false;
 
-   m_prefix = "SMC_OTE_";
+   SetModulePrefix("OTE");
+   m_currentOTE.Init();
 
+   bool keepOwned = m_ownSwing && m_swingPoints == swingPoints && swingPoints != NULL;
+   if(m_ownSwing && m_swingPoints != NULL && m_swingPoints != swingPoints)
+     { delete m_swingPoints; m_swingPoints = NULL; m_ownSwing = false; }
    if(swingPoints != NULL)
-     { m_swingPoints = swingPoints; m_ownSwing = false; }
+     { m_swingPoints = swingPoints; m_ownSwing = keepOwned; }
    else
      {
       m_swingPoints = new CSmcSwingPoints();
@@ -99,11 +104,17 @@ bool CSmcOptimalTradeEntry::Init(const string symbol, const ENUM_TIMEFRAMES time
 //+------------------------------------------------------------------+
 bool CSmcOptimalTradeEntry::Update()
   {
-   if(!m_initialized || m_swingPoints == NULL)
+   if(m_enableDraw)
+      CSmcDrawing::DeleteObjectsByPrefix(m_prefix);
+   m_currentOTE.Init();
+   if(!m_initialized || m_swingPoints == NULL || !PrepareRates())
       return false;
 
    if(m_ownSwing)
-      m_swingPoints.Update();
+     {
+      m_swingPoints.SetRates(m_rates);
+      if(!m_swingPoints.Update()) return false;
+     }
 
    Calculate();
 
@@ -130,7 +141,7 @@ bool CSmcOptimalTradeEntry::GetOTEZone(SmcOTEZone &ote) const
 
 bool CSmcOptimalTradeEntry::IsInOTEZone() const
   {
-   return IsInOTEZone(SymbolInfoDouble(m_symbol, SYMBOL_BID));
+   return IsInOTEZone(Close(1));
   }
 
 bool CSmcOptimalTradeEntry::IsInOTEZone(const double price) const
@@ -177,8 +188,8 @@ void CSmcOptimalTradeEntry::Calculate()
    m_currentOTE.swingHigh = sh.price;
    m_currentOTE.swingLow  = sl.price;
 
-//--- 方向: 最新のスイングがハイならBearishリトレース、ローならBullishリトレース
-   m_currentOTE.isBullish = (sl.barIndex < sh.barIndex);
+// A completed upward leg ends at the newer high; its retracement is bullish OTE.
+   m_currentOTE.isBullish = (sh.barIndex < sl.barIndex);
 
    double range = sh.price - sl.price;
    if(range <= 0)
