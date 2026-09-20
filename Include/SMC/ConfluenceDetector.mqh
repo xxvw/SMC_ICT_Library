@@ -64,6 +64,9 @@ public:
                           const bool enableDraw = false);
    virtual bool      Update();
    virtual void      Clean();
+   // Invalidate cached decisions without a history read. Clean remains drawing-only.
+   void              InvalidateSignals()
+     { m_buyZone.Init(); m_sellZone.Init(); m_lastSignal = SIGNAL_WAIT; }
 
    //--- モジュール設定
    void              SetStructure(CSmcMarketStructure *s) { m_structure = s; }
@@ -129,23 +132,21 @@ CSmcConfluence::~CSmcConfluence() {}
 bool CSmcConfluence::Init(const string symbol, const ENUM_TIMEFRAMES timeframe,
                           const bool enableDraw)
   {
-   m_buyZone.Init(); m_sellZone.Init(); m_lastSignal = SIGNAL_WAIT;
    if(!CSmcBase::Init(symbol, timeframe, enableDraw))
       return false;
-   SetModulePrefix("CONF");
+   m_prefix = "SMC_CONF_";
    return true;
   }
 
 //+------------------------------------------------------------------+
 bool CSmcConfluence::Update()
   {
-   if(m_enableDraw)
-      CSmcDrawing::DeleteObjectsByPrefix(m_prefix);
+   if(!m_initialized)
+      return false;
+
    m_buyZone.Init();
    m_sellZone.Init();
    m_lastSignal = SIGNAL_WAIT;
-   if(!m_initialized || !PrepareRates())
-      return false;
 
    DetectBuyZone();
    DetectSellZone();
@@ -191,14 +192,14 @@ void CSmcConfluence::SetWeights(const double structure, const double ob,
 //+------------------------------------------------------------------+
 bool CSmcConfluence::GetBuyZone(SmcConfluenceZone &zone) const
   {
-   if(!m_buyZone.isValid) return false;
+   if(!m_buyZone.isValid) { zone.Init(); return false; }
    zone = m_buyZone;
    return true;
   }
 
 bool CSmcConfluence::GetSellZone(SmcConfluenceZone &zone) const
   {
-   if(!m_sellZone.isValid) return false;
+   if(!m_sellZone.isValid) { zone.Init(); return false; }
    zone = m_sellZone;
    return true;
   }
@@ -221,7 +222,7 @@ bool CSmcConfluence::IsSellAllowed() const
 void CSmcConfluence::DetectBuyZone()
   {
    m_buyZone.isBullish = true;
-   double bid = Close(1);
+   double bid = SymbolInfoDouble(m_symbol, SYMBOL_BID);
    double tolerance = PipsToPrice(m_tolerancePips);
 
 //--- 1. 構造 (BOS/CHoCH)
@@ -273,7 +274,7 @@ void CSmcConfluence::DetectBuyZone()
 //--- 4. Liquidity sweep
    if(m_liquidity != NULL)
      {
-      if(m_liquidity.HasRecentSweep(LIQ_SWEEP_LOW, 5))
+      if(m_liquidity.IsLiquiditySweep(LIQ_SWEEP_LOW))
          AddFactor(m_buyZone, "Low Sweep", m_weightLiquidity);
      }
 
@@ -308,7 +309,7 @@ void CSmcConfluence::DetectBuyZone()
 void CSmcConfluence::DetectSellZone()
   {
    m_sellZone.isBullish = false;
-   double bid = Close(1);
+   double bid = SymbolInfoDouble(m_symbol, SYMBOL_BID);
    double tolerance = PipsToPrice(m_tolerancePips);
 
    if(m_structure != NULL)
@@ -353,7 +354,7 @@ void CSmcConfluence::DetectSellZone()
      }
 
    if(m_liquidity != NULL)
-      if(m_liquidity.HasRecentSweep(LIQ_SWEEP_HIGH, 5))
+      if(m_liquidity.IsLiquiditySweep(LIQ_SWEEP_HIGH))
          AddFactor(m_sellZone, "High Sweep", m_weightLiquidity);
 
    if(m_ote != NULL)
@@ -399,7 +400,7 @@ void CSmcConfluence::FinalizeZone(SmcConfluenceZone &zone)
       total += zone.factorScores[i];
 
    zone.totalScore  = MathMin(1.0, total);
-   zone.centerPrice = Close(1);
+   zone.centerPrice = SymbolInfoDouble(m_symbol, SYMBOL_BID);
    zone.topPrice    = zone.centerPrice + PipsToPrice(m_tolerancePips / 2);
    zone.bottomPrice = zone.centerPrice - PipsToPrice(m_tolerancePips / 2);
    zone.isValid     = (zone.factorCount >= 1);
