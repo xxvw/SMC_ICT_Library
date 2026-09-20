@@ -5,12 +5,13 @@ Data Loader Module
 Handles data ingestion from MetaTrader 5 and CSV files, time-series aware
 splitting, and sequence creation for LSTM / transformer models.
 
-Gracefully falls back to CSV loading when the MetaTrader5 package is not
-installed or the terminal is not running.
+CSV loading is available without the optional MetaTrader5 package. A failed
+terminal connection raises an explicit error; callers can select a CSV path.
 """
 
 from __future__ import annotations
 
+import csv
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -30,10 +31,7 @@ try:
     _MT5_AVAILABLE = True
 except ImportError:
     _MT5_AVAILABLE = False
-    logger.warning(
-        "MetaTrader5 package not installed. "
-        "Only CSV-based loading will be available."
-    )
+    logger.debug("MetaTrader5 is unavailable; CSV loading remains available.")
 
 # ---------------------------------------------------------------------------
 # Timeframe mapping  (MQL5 enum value -> MT5 constant)
@@ -95,6 +93,57 @@ def _resolve_mt5_timeframe(timeframe: Union[str, int]) -> int:
     return TIMEFRAME_MAP[tf_upper]
 
 
+def _validate_n_bars(n_bars: int) -> None:
+    if (
+        isinstance(n_bars, bool)
+        or not isinstance(n_bars, (int, np.integer))
+        or n_bars <= 0
+    ):
+        raise ValueError("n_bars must be a positive integer")
+
+
+def _validate_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize both sources to one chronological, validated OHLCV contract."""
+    df = df.copy()
+    df.columns = [str(column).strip().lower() for column in df.columns]
+    if df.columns.duplicated().any():
+        raise ValueError("Duplicate column names after normalization")
+    required = {"datetime", "open", "high", "low", "close"}
+    missing = required.difference(df.columns)
+    if missing:
+        raise ValueError(f"Missing required columns: {', '.join(sorted(missing))}")
+    if df.empty:
+        raise ValueError("OHLCV data must contain at least one row")
+    df["datetime"] = pd.to_datetime(df["datetime"], errors="raise")
+    if df["datetime"].isna().any():
+        raise ValueError("Timestamps must not be missing")
+    if df["datetime"].duplicated().any():
+        raise ValueError("Duplicate timestamps are not allowed")
+    for column in ("open", "high", "low", "close", "volume", "tick_volume", "real_volume"):
+        if column not in df:
+            continue
+        df[column] = pd.to_numeric(df[column], errors="raise")
+        if not np.isfinite(df[column].to_numpy(dtype=float)).all():
+            raise ValueError(f"{column} must contain finite numbers")
+        if column in ("volume", "tick_volume", "real_volume"):
+            if (df[column] < 0).any() or (df[column] % 1 != 0).any():
+                raise ValueError(f"{column} must contain non-negative integers")
+    invalid = (df["high"] < df[["open", "close", "low"]].max(axis=1)) | (
+        df["low"] > df[["open", "close", "high"]].min(axis=1)
+    )
+    if invalid.any():
+        raise ValueError("OHLC prices must satisfy low <= open/close <= high")
+    # Keep the exported column as well as the name used by existing ML scripts.
+    if "volume" in df and "tick_volume" in df:
+        if not (df["volume"] == df["tick_volume"]).all():
+            raise ValueError("volume and tick_volume aliases disagree")
+    elif "volume" in df:
+        df["tick_volume"] = df["volume"]
+    elif "tick_volume" in df:
+        df["volume"] = df["tick_volume"]
+    return df.sort_values("datetime", kind="stable").reset_index(drop=True)
+
+
 class DataLoader:
     """Unified data loading interface for the OSS Library.
 
@@ -129,10 +178,19 @@ class DataLoader:
 
         This keeps compatibility with training scripts that instantiate
         ``DataLoader(symbol, timeframe)`` and then call ``load(n_bars)``.
+        CSV rows are sorted before selecting the most recent ``n_bars``.
+        ``start_date``, if supplied, is an inclusive upper time bound.
         """
+        _validate_n_bars(n_bars)
         path = Path(csv_path) if csv_path is not None else self.csv_path
         if path is not None:
-            return self.load_from_csv(path)
+            df = self.load_from_csv(path)
+            if start_date is not None:
+                # Match MT5 copy_rates_from: bars at or before this timestamp.
+                df = df.loc[df["datetime"] <= pd.Timestamp(start_date)]
+            if df.empty:
+                raise ValueError("No CSV bars at or before start_date")
+            return df.tail(n_bars).reset_index(drop=True)
 
         if self.symbol is None or self.timeframe is None:
             raise ValueError(
@@ -167,9 +225,9 @@ class DataLoader:
         n_bars : int
             Number of bars to request.
         start_date : datetime, optional
-            If provided, data is fetched starting from this date forward
-            (up to ``n_bars``).  Otherwise the most recent ``n_bars`` are
-            returned.
+            If provided, return up to ``n_bars`` bars at or before this
+            timestamp (the MT5 ``copy_rates_from`` convention). Otherwise
+            request the most recent ``n_bars`` completed bars.
 
         Returns
         -------
@@ -182,6 +240,10 @@ class DataLoader:
         RuntimeError
             If the MT5 package is missing or the terminal cannot be reached.
         """
+        _validate_n_bars(n_bars)
+        tf = _resolve_mt5_timeframe(timeframe)
+        if not symbol or not symbol.strip():
+            raise ValueError("symbol must not be empty")
         if not _MT5_AVAILABLE:
             raise RuntimeError(
                 "MetaTrader5 package is not installed. "
@@ -194,12 +256,10 @@ class DataLoader:
             )
 
         try:
-            tf = _resolve_mt5_timeframe(timeframe)
-
             if start_date is not None:
                 rates = mt5.copy_rates_from(symbol, tf, start_date, n_bars)
             else:
-                rates = mt5.copy_rates_from_pos(symbol, tf, 0, n_bars)
+                rates = mt5.copy_rates_from_pos(symbol, tf, 1, n_bars)
 
             if rates is None or len(rates) == 0:
                 raise RuntimeError(
@@ -211,8 +271,7 @@ class DataLoader:
             df["datetime"] = pd.to_datetime(df["time"], unit="s")
             df.drop(columns=["time"], inplace=True)
 
-            # Normalise column names to lowercase
-            df.columns = [c.lower() for c in df.columns]
+            df = _validate_frame(df).tail(n_bars).reset_index(drop=True)
 
             logger.info(
                 "Loaded %d bars for %s %s from MT5",
@@ -235,6 +294,10 @@ class DataLoader:
         The CSV is expected to have a header row with at least:
         ``datetime, open, high, low, close``.  Additional columns such as
         ``tick_volume``, ``spread``, ``real_volume`` are preserved if present.
+        UTF-8 and BOM-marked legacy UTF-16 files are supported. Rows are
+        sorted chronologically; duplicate timestamps and invalid OHLC/volume
+        values raise ``ValueError``. Both ``volume`` and ``tick_volume`` aliases
+        are provided when either is present.
 
         Parameters
         ----------
@@ -250,7 +313,18 @@ class DataLoader:
         if not filepath.exists():
             raise FileNotFoundError(f"CSV file not found: {filepath}")
 
-        df = pd.read_csv(filepath)
+        # Legacy MQL FILE_UNICODE exports carry a UTF-16 BOM. New exports
+        # use UTF-8; utf-8-sig also accepts a BOM from external CSV tools.
+        with filepath.open("rb") as stream:
+            prefix = stream.read(2)
+        encoding = "utf-16" if prefix in (b"\xff\xfe", b"\xfe\xff") else "utf-8-sig"
+        # pandas otherwise silently renames repeated headers (open -> open.1).
+        with filepath.open(encoding=encoding, newline="") as stream:
+            headers = next(csv.reader(stream), [])
+        normalized = [column.strip().lower() for column in headers]
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("Duplicate column names after normalization")
+        df = pd.read_csv(filepath, encoding=encoding)
 
         # Normalise column names
         df.columns = [c.strip().lower() for c in df.columns]
@@ -266,12 +340,7 @@ class DataLoader:
         elif "time" in df.columns:
             df["datetime"] = pd.to_datetime(df["time"])
             df.drop(columns=["time"], inplace=True)
-        else:
-            logger.warning(
-                "No recognised datetime column found – data will lack "
-                "timestamps."
-            )
-
+        df = _validate_frame(df)
         logger.info("Loaded %d rows from %s", len(df), filepath.name)
         return df
 
@@ -337,6 +406,9 @@ class DataLoader:
         tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]
             ``(train, val, test)`` DataFrames with reset indices.
         """
+        if not (0.0 < train_ratio < 1.0 and 0.0 < val_ratio < 1.0
+                and train_ratio + val_ratio < 1.0):
+            raise ValueError("Split ratios must be positive and sum to less than one")
         n = len(df)
         train_end = int(n * train_ratio)
         val_end = int(n * (train_ratio + val_ratio))
@@ -384,6 +456,18 @@ class DataLoader:
             raise ValueError(
                 f"Expected 2-D array, got shape {data.shape}"
             )
+        if (
+            isinstance(seq_length, bool)
+            or not isinstance(seq_length, (int, np.integer))
+            or seq_length <= 0
+        ):
+            raise ValueError("seq_length must be a positive integer")
+        if (
+            isinstance(target_col, bool)
+            or not isinstance(target_col, (int, np.integer))
+            or not 0 <= target_col < data.shape[1]
+        ):
+            raise ValueError("target_col must be a valid non-negative column index")
         if seq_length >= len(data):
             raise ValueError(
                 f"seq_length ({seq_length}) must be less than "
