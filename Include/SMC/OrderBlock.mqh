@@ -52,7 +52,16 @@ public:
    virtual void      Clean();
 
    //--- 設定
-   void              SetMaxAge(const int age) { m_maxAge = age; }
+   void              SetEvaluationLimits(const int lookbackBars, const int maxRecords)
+     {
+      m_lookbackBars = MathMax(1, lookbackBars);
+      m_maxOBs = MathMax(1, maxRecords);
+      ArrayResize(m_bullishOBs, m_maxOBs);
+      ArrayResize(m_bearishOBs, m_maxOBs);
+      m_bullishCount = 0;
+      m_bearishCount = 0;
+     }
+   void              SetMaxAge(const int age) { m_maxAge = MathMax(0, age); }
    void              SetMinStrength(const double str) { m_minStrength = str; }
 
    //--- Bullish OB
@@ -77,7 +86,8 @@ public:
 private:
    void              DetectOrderBlocks();
    void              UpdateStates();
-   bool              IsImpulsiveMove(const int startBar, const int direction);
+   int               FindImpulseConfirmation(const int startBar, const int direction);
+   void              ReplayZone(SmcZone &zone);
    double            CalcOBScore(const SmcZone &ob) const;
    void              DrawOrderBlocks();
   };
@@ -86,7 +96,7 @@ private:
 CSmcOrderBlock::CSmcOrderBlock()
    : m_structure(NULL)
    , m_ownStructure(false)
-   , m_lookbackBars(100)
+   , m_lookbackBars(500)
    , m_maxOBs(20)
    , m_maxAge(100)
    , m_minStrength(1.5)
@@ -112,15 +122,23 @@ CSmcOrderBlock::~CSmcOrderBlock()
 bool CSmcOrderBlock::Init(const string symbol, const ENUM_TIMEFRAMES timeframe,
                           const bool enableDraw, CSmcMarketStructure *structure)
   {
+   m_bullishCount = 0; m_bearishCount = 0;
    if(!CSmcBase::Init(symbol, timeframe, enableDraw))
       return false;
 
-   m_prefix = "SMC_OB_";
+   SetModulePrefix("OB");
+   m_bullishCount = 0;
+   m_bearishCount = 0;
+   bool keepOwned = m_ownStructure && m_structure == structure && structure != NULL;
+   if(m_ownStructure && m_structure != NULL && !keepOwned)
+      delete m_structure;
+   m_structure = keepOwned ? structure : NULL;
+   m_ownStructure = keepOwned;
 
    if(structure != NULL)
      {
       m_structure    = structure;
-      m_ownStructure = false;
+      m_ownStructure = keepOwned;
      }
    else
      {
@@ -129,6 +147,7 @@ bool CSmcOrderBlock::Init(const string symbol, const ENUM_TIMEFRAMES timeframe,
         {
          delete m_structure;
          m_structure = NULL;
+         m_initialized = false;
          return false;
         }
       m_ownStructure = true;
@@ -143,14 +162,19 @@ bool CSmcOrderBlock::Init(const string symbol, const ENUM_TIMEFRAMES timeframe,
 //+------------------------------------------------------------------+
 bool CSmcOrderBlock::Update()
   {
-   if(!m_initialized || m_structure == NULL)
+   if(m_enableDraw)
+      CSmcDrawing::DeleteObjectsByPrefix(m_prefix);
+   m_bullishCount = 0;
+   m_bearishCount = 0;
+   if(!m_initialized || m_structure == NULL || !PrepareRates(m_lookbackBars + 24) || RatesCount() < 23)
       return false;
 
    if(m_ownStructure)
-      m_structure.Update();
-
-   m_bullishCount = 0;
-   m_bearishCount = 0;
+     {
+      m_structure.SetRates(m_rates);
+      if(!m_structure.Update())
+         return false;
+     }
 
    DetectOrderBlocks();
    UpdateStates();
@@ -232,7 +256,7 @@ int CSmcOrderBlock::GetFreshBullishCount() const
   {
    int count = 0;
    for(int i = 0; i < m_bullishCount; i++)
-      if(m_bullishOBs[i].IsFresh())
+      if(m_bullishOBs[i].IsActive() && m_bullishOBs[i].IsFresh())
          count++;
    return count;
   }
@@ -241,7 +265,7 @@ int CSmcOrderBlock::GetFreshBearishCount() const
   {
    int count = 0;
    for(int i = 0; i < m_bearishCount; i++)
-      if(m_bearishOBs[i].IsFresh())
+      if(m_bearishOBs[i].IsActive() && m_bearishOBs[i].IsFresh())
          count++;
    return count;
   }
@@ -261,160 +285,100 @@ double CSmcOrderBlock::GetStopLossForSell(const SmcZone &ob) const
 //+------------------------------------------------------------------+
 void CSmcOrderBlock::DetectOrderBlocks()
   {
-   double avgRange = GetAverageRange(20);
-   if(avgRange == 0)
-      return;
-
-   int limit = MathMin(m_lookbackBars, iBars(m_symbol, m_timeframe) - 5);
-
-   for(int i = 2; i < limit; i++)
+   // A source candle requires 20 preceding candles for its impulse baseline.
+   int limit = MathMin(m_lookbackBars + 1, RatesCount() - 21);
+   for(int bar = 2; bar <= limit; bar++)
      {
-      bool isBull = IsBullishCandle(i);
-      bool isBear = IsBearishCandle(i);
+      bool bullish = IsBearishCandle(bar);
+      if(!bullish && !IsBullishCandle(bar))
+         continue;
+      int confirmed = FindImpulseConfirmation(bar - 1, bullish ? 1 : -1);
+      if(confirmed < 1)
+         continue;
 
-      //--- Bullish OB: 陰線の後に強い上昇インパルス
-      if(isBear && IsImpulsiveMove(i - 1, 1))
-        {
-         if(m_bullishCount < m_maxOBs)
-           {
-            m_bullishOBs[m_bullishCount].Init();
-            m_bullishOBs[m_bullishCount].topPrice      = High(i);
-            m_bullishOBs[m_bullishCount].bottomPrice    = Low(i);
-            m_bullishOBs[m_bullishCount].formationTime  = Time(i);
-            m_bullishOBs[m_bullishCount].formationBar   = i;
-            m_bullishOBs[m_bullishCount].isBullish      = true;
-            m_bullishOBs[m_bullishCount].state           = ZONE_FRESH;
-            m_bullishOBs[m_bullishCount].candleCount     = 1;
-            m_bullishOBs[m_bullishCount].age             = i;
-            m_bullishOBs[m_bullishCount].isValid         = true;
-
-            //--- 確率分類
-            m_bullishOBs[m_bullishCount].probability =
-               (m_bullishOBs[m_bullishCount].candleCount == 1) ? PROB_HIGH : PROB_LOW;
-
-            m_bullishOBs[m_bullishCount].score = CalcOBScore(m_bullishOBs[m_bullishCount]);
-            m_bullishCount++;
-           }
-        }
-
-      //--- Bearish OB: 陽線の後に強い下降インパルス
-      if(isBull && IsImpulsiveMove(i - 1, -1))
-        {
-         if(m_bearishCount < m_maxOBs)
-           {
-            m_bearishOBs[m_bearishCount].Init();
-            m_bearishOBs[m_bearishCount].topPrice      = High(i);
-            m_bearishOBs[m_bearishCount].bottomPrice    = Low(i);
-            m_bearishOBs[m_bearishCount].formationTime  = Time(i);
-            m_bearishOBs[m_bearishCount].formationBar   = i;
-            m_bearishOBs[m_bearishCount].isBullish      = false;
-            m_bearishOBs[m_bearishCount].state           = ZONE_FRESH;
-            m_bearishOBs[m_bearishCount].candleCount     = 1;
-            m_bearishOBs[m_bearishCount].age             = i;
-            m_bearishOBs[m_bearishCount].isValid         = true;
-            m_bearishOBs[m_bearishCount].probability =
-               (m_bearishOBs[m_bearishCount].candleCount == 1) ? PROB_HIGH : PROB_LOW;
-            m_bearishOBs[m_bearishCount].score = CalcOBScore(m_bearishOBs[m_bearishCount]);
-            m_bearishCount++;
-           }
-        }
+      SmcZone zone;
+      zone.Init();
+      zone.topPrice = High(bar);
+      zone.bottomPrice = Low(bar);
+      zone.formationTime = Time(bar);
+      zone.formationBar = bar;
+      zone.confirmedTime = Time(confirmed);
+      zone.confirmedBar = confirmed;
+      zone.isBullish = bullish;
+      zone.probability = PROB_HIGH;
+      zone.isValid = true;
+      if(bullish && m_bullishCount < m_maxOBs)
+         m_bullishOBs[m_bullishCount++] = zone;
+      else if(!bullish && m_bearishCount < m_maxOBs)
+         m_bearishOBs[m_bearishCount++] = zone;
      }
   }
 
-//+------------------------------------------------------------------+
-//| インパルシブムーブ判定                                             |
-//+------------------------------------------------------------------+
-bool CSmcOrderBlock::IsImpulsiveMove(const int startBar, const int direction)
+// Preserve the legacy four-candle impulse rule, but record its first closed
+// confirmation and use only the candles preceding the candidate as baseline.
+int CSmcOrderBlock::FindImpulseConfirmation(const int startBar, const int direction)
   {
-   double avgBody = GetAverageCandleBody(20);
-   if(avgBody == 0)
-      return false;
-
-   int consecutive = 0;
+   double avgBody = GetAverageCandleBody(20, startBar + 2);
+   if(avgBody <= 0)
+      return -1;
    double totalMove = 0;
-
-   for(int i = startBar; i >= MathMax(0, startBar - 3); i--)
+   for(int bar = startBar; bar >= MathMax(1, startBar - 3); bar--)
      {
-      double body = CandleBody(i);
-      if(direction > 0 && IsBullishCandle(i) && body > avgBody * m_minStrength)
-        {
+      bool matches = direction > 0 ? IsBullishCandle(bar) : IsBearishCandle(bar);
+      double body = CandleBody(bar);
+      if(matches && body > avgBody * m_minStrength)
          totalMove += body;
-         consecutive++;
-        }
-      else if(direction < 0 && IsBearishCandle(i) && body > avgBody * m_minStrength)
-        {
-         totalMove += body;
-         consecutive++;
-        }
+      if(totalMove > avgBody * 2.0)
+         return bar;
      }
-
-   return (consecutive >= 1 && totalMove > avgBody * 2.0);
+   return -1;
   }
 
-//+------------------------------------------------------------------+
-//| OB状態更新                                                         |
 //+------------------------------------------------------------------+
 void CSmcOrderBlock::UpdateStates()
   {
-   double currentBid = SymbolInfoDouble(m_symbol, SYMBOL_BID);
-
-   //--- Bullish OB状態更新
    for(int i = 0; i < m_bullishCount; i++)
      {
-      if(!m_bullishOBs[i].isValid)
-         continue;
-
-      m_bullishOBs[i].age = m_bullishOBs[i].formationBar;
-
-      //--- 寿命切れ
-      if(m_bullishOBs[i].age > m_maxAge)
-        {
-         m_bullishOBs[i].state   = ZONE_BROKEN;
-         m_bullishOBs[i].isValid = false;
-         continue;
-        }
-
-      //--- 価格がOBゾーン内に入った場合
-      if(currentBid <= m_bullishOBs[i].topPrice && currentBid >= m_bullishOBs[i].bottomPrice)
-        {
-         if(m_bullishOBs[i].state == ZONE_FRESH)
-            m_bullishOBs[i].state = ZONE_TESTED;
-        }
-
-      //--- 下抜けでブレイク
-      if(currentBid < m_bullishOBs[i].bottomPrice && m_bullishOBs[i].state == ZONE_TESTED)
-        {
-         m_bullishOBs[i].state   = ZONE_BROKEN;
-         m_bullishOBs[i].isValid = false;
-        }
+      ReplayZone(m_bullishOBs[i]);
+      m_bullishOBs[i].score = CalcOBScore(m_bullishOBs[i]);
      }
-
-   //--- Bearish OB状態更新
    for(int i = 0; i < m_bearishCount; i++)
      {
-      if(!m_bearishOBs[i].isValid)
+      ReplayZone(m_bearishOBs[i]);
+      m_bearishOBs[i].score = CalcOBScore(m_bearishOBs[i]);
+     }
+  }
+
+void CSmcOrderBlock::ReplayZone(SmcZone &zone)
+  {
+   zone.age = zone.confirmedBar - 1;
+   double tick = m_tickSize > 0 ? m_tickSize : m_point;
+   for(int bar = zone.confirmedBar - 1; bar >= 1; bar--)
+     {
+      if(zone.confirmedBar - bar > m_maxAge)
+        {
+         zone.isExpired = true;
+         zone.isValid = false;
+         break;
+        }
+      bool broken = zone.isBullish ? Close(bar) <= NormalizePrice(zone.bottomPrice - tick) :
+                                     Close(bar) >= NormalizePrice(zone.topPrice + tick);
+      if(broken)
+        {
+         zone.state = ZONE_BROKEN;
+         zone.brokenTime = Time(bar);
+         zone.isValid = false;
+         break;
+        }
+      bool touched = Low(bar) <= zone.topPrice && High(bar) >= zone.bottomPrice;
+      if(!touched)
          continue;
-
-      m_bearishOBs[i].age = m_bearishOBs[i].formationBar;
-
-      if(m_bearishOBs[i].age > m_maxAge)
-        {
-         m_bearishOBs[i].state   = ZONE_BROKEN;
-         m_bearishOBs[i].isValid = false;
-         continue;
-        }
-
-      if(currentBid >= m_bearishOBs[i].bottomPrice && currentBid <= m_bearishOBs[i].topPrice)
-        {
-         if(m_bearishOBs[i].state == ZONE_FRESH)
-            m_bearishOBs[i].state = ZONE_TESTED;
-        }
-
-      if(currentBid > m_bearishOBs[i].topPrice && m_bearishOBs[i].state == ZONE_TESTED)
-        {
-         m_bearishOBs[i].state   = ZONE_BROKEN;
-         m_bearishOBs[i].isValid = false;
-        }
+      if(zone.state == ZONE_FRESH)
+         zone.state = ZONE_TESTED;
+      bool midpoint = zone.isBullish ? Low(bar) <= zone.GetCenter() :
+                                       High(bar) >= zone.GetCenter();
+      if(midpoint)
+         zone.state = ZONE_MITIGATED;
      }
   }
 
