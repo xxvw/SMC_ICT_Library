@@ -69,7 +69,11 @@ JSON Schema validates shape, required fields, enums, and per-field bounds. Consu
 
 The exporter writes UTF-8 JSON in the MT5 common files directory. It completes a temporary file before replacing the destination so readers do not consume an in-progress document. Pass the snapshot file path to an external example; examples do not place trades and do not reproduce detection logic.
 
-Each sample prints one envelope line followed by records sorted by `id`, optionally filtered by concept and direction. Fields in each record row are separated by tabs in this order: `id`, `concept`, `direction`, `state`, `lower`, `upper`. Prices use a dot and exactly eight decimal places; output ends with a newline. The envelope line is:
+Each sample prints one envelope line followed by records sorted by `id`, optionally filtered by concept and direction. Fields in each record row are separated by tabs in this order: `id`, `concept`, `direction`, `state`, `lower`, `upper`. Prices use a dot and exactly eight decimal places; output ends with a newline.
+
+For consistent output across languages, readers interpret JSON price numbers as IEEE 754 binary64 values and round that exact binary value to eight fractional digits using round-to-nearest, ties-to-even. Do not round the original decimal spelling or a value obtained by multiplying the floating-point price by `100000000`; either can change the boundary. For example, `0.001953125` prints as `0.00195312`, while the binary64 value parsed from `1.000000005` prints as `1.00000000`. Any value that rounds to zero, including negative zero and tiny negative prices, prints as `0.00000000`. Large finite values retain fixed decimal notation, never scientific notation.
+
+The envelope line is:
 
 ```text
 status=READY symbol=EURUSD timeframe=M5 as_of=2026-09-18T12:00:00 time_basis=broker

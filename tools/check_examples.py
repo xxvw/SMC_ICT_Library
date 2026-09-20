@@ -73,14 +73,20 @@ def expected_output(snapshot: dict[str, Any], concept: str | None = None,
     as_of = snapshot["as_of"] if snapshot["as_of"] is not None else "null"
     lines = [(f"status={snapshot['status']} symbol={snapshot['symbol']} "
               f"timeframe={snapshot['timeframe']} as_of={as_of} time_basis=broker")]
+
+    def price(value: float) -> str:
+        # Python's fixed format rounds the exact binary64 value, with ties to even.
+        rendered = f"{float(value):.8f}"
+        return "0.00000000" if rendered == "-0.00000000" else rendered
+
     for record in sorted(snapshot["records"], key=lambda item: item["id"]):
         if concept is not None and record["concept"] != concept:
             continue
         if direction is not None and record["direction"] != direction:
             continue
         lines.append("\t".join((record["id"], record["concept"], record["direction"],
-                                record["state"], f"{record['lower']:.8f}",
-                                f"{record['upper']:.8f}")))
+                                record["state"], price(record["lower"]),
+                                price(record["upper"]))))
     return "\n".join(lines) + "\n"
 
 
@@ -260,6 +266,29 @@ def verify_cli(command: list[str], root: Path, fixture: Path, snapshot: dict[str
     failure(fixture, "--unknown-option")
     with tempfile.TemporaryDirectory(prefix="smc-example-contract-") as temporary:
         directory = Path(temporary)
+        # Include exact halfway values and values whose short decimal spelling
+        # hides the binary64 rounding boundary. The CLI must use the parsed double.
+        prices = (0.0, -0.0, 5e-324, -5e-324, 1e-12, -1e-12,
+                  0.001953125, -0.001953125, 0.005859375, -0.005859375,
+                  1.000000005, -1.000000005, 1e21, -1e21, 1e100, -1e100,
+                  sys.float_info.max, -sys.float_info.max, 9007199254740993)
+        boundaries = json.loads(json.dumps(snapshot))
+        template = boundaries["records"][0]
+        boundaries["records"] = [template | {"id": f"price-{index:02d}", "lower": price, "upper": price}
+                                 for index, price in enumerate(prices)]
+        path = directory / "price-boundaries.json"
+        path.write_text(json.dumps(boundaries), encoding="utf-8")
+        success(path, expected_output(boundaries))
+        for index, message in enumerate(("", "Comparison history is unavailable")):
+            diagnostic = snapshot | {"message": message}
+            path = directory / f"message-valid-{index}.json"
+            path.write_text(json.dumps(diagnostic), encoding="utf-8")
+            success(path, expected)
+        for index, message in enumerate((None, False, 1, [], {})):
+            diagnostic = snapshot | {"message": message}
+            path = directory / f"message-invalid-{index}.json"
+            path.write_text(json.dumps(diagnostic), encoding="utf-8")
+            failure(path)
         for label, mutate in (
             ("unsupported-major", lambda value: value.update(schema_version="2.0")),
             ("missing-required", lambda value: value.pop("as_of")),
