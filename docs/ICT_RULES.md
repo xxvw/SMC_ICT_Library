@@ -31,6 +31,14 @@ BPR may reference original FVGs that have already been filled or broken: it repr
 
 SMT is for positive-correlation comparisons in this version. No comparison instrument is chosen implicitly. A nonempty `smtSymbol` enables it; explicitly enabling SMT without a comparison symbol is invalid. Missing comparison data is a readiness problem, not a no-divergence result.
 
+## Broker-period coverage and opening gaps
+
+Previous-day/week levels require a successor period opening at or before `asOf` to establish which period is complete. The latest supplied D1/W1 period whose opening is at or before `asOf` must also cover that evaluation time through its natural end, inclusively. A Friday D1 candle therefore covers a primary candle closing exactly at Saturday 00:00. A stale array ending earlier cannot produce `READY`, and a future period beyond `asOf` cannot repair it. Longer unproven intervals remain `NOT_READY`; the detector does not invent weekend or holiday bars.
+
+Opening gaps normally confirm on the first closed primary candle starting inside the new broker period. That candle may already fill the gap; subsequent closed candles preserve the earliest fill time. A W1 primary candle contains several daily boundaries, so daily gaps on W1 use closed D1 candles for confirmation and fill replay. On MN1, both daily and weekly gaps use closed D1 replay, including a week that overlaps month end. These events confirm and update at D1 closing times while retaining the requested primary timeframe in their IDs and the primary evaluation time in module `asOf`.
+
+Coarse-timeframe replay requires D1 history spanning the supplied primary evaluation interval, with the preceding broker period available for each gap. Only D1 candles closed by `asOf` supply prices. Forming D1/W1 extrema and closes, including candles beginning exactly at `asOf`, cannot confirm or fill a gap. Missing replay coverage returns `NOT_READY` and removes that concept's stale results rather than reporting an empty successful detection.
+
 ## Sessions and Power of Three
 
 All session intervals include the start and exclude the end. The defaults are:
@@ -42,6 +50,8 @@ All session intervals include the start and exclude the end. The defaults are:
 | NewYork | 12:00–21:00 | `[720, 1260)` |
 
 Names are labels, not automatic time-zone conversions. Set broker-local hours appropriate to your data. An end before the start denotes a session crossing midnight; equal start/end values are invalid. A synchronized history interval may include no-tick minutes, but an uncovered or empty session is not a completed usable range.
+
+Session and Power of Three callers can explicitly attest M1 coverage with `coverageStart` and `coverageEnd` after a successful synchronized history request. Without that attestation, coverage is inferred conservatively from the supplied M1 boundary candles closed by `asOf`; appending a future M1 candle cannot certify an earlier missing interval. Session results use the latest completed occurrence of each configured session. Missing required ranges are reported as `NOT_READY`, or `PARTIAL` when other session ranges remain available.
 
 Power of Three uses `sessions[0]` for accumulation. A candle spanning the accumulation boundary cannot prove a later manipulation. A bar that sweeps both sides invalidates the sequence. After manipulation, a close through the manipulation side invalidates it; distribution requires a later Displacement body in the expected direction closing beyond the opposite range boundary. The opportunity expires after the 20-bar manipulation window or at the next accumulation-session start, whichever comes first. `ACCUMULATION`, `MANIPULATION`, `DISTRIBUTION`, `INVALIDATED`, and `EXPIRED` describe pattern stages; they are not the zone lifecycle below.
 
