@@ -9,7 +9,7 @@ SMC_MultiCurrency_Swing EA 用 ONNX モデル 一括学習スクリプト
 3. 出力ファイルを MQL5/Files/models/ にコピー
 
 使い方:
-  cd SMC_ICT_OSS_LIB/Python
+  cd ICT_Library_MQ5/Python
   pip install -r requirements_swing.txt
   python train_swing_models.py
 

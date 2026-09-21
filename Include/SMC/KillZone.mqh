@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //| KillZone.mqh — session windows in explicit broker or GMT time     |
-//| Copyright 2025-2026, SMC_ICT_Library                              |
+//| Copyright 2025-2026, ICT_Library_MQ5                              |
 //+------------------------------------------------------------------+
 #property strict
 #ifndef __SMC_KILL_ZONE_MQH__

@@ -1,8 +1,8 @@
 //+------------------------------------------------------------------+
 //| DataExporter.mqh - confirmed-bar CSV export                       |
-//| Copyright 2025-2026, SMC_ICT_Library                              |
+//| Copyright 2025-2026, ICT_Library_MQ5                              |
 //+------------------------------------------------------------------+
-#property copyright "SMC_ICT_Library"
+#property copyright "ICT_Library_MQ5"
 #property version   "1.00"
 #property strict
 

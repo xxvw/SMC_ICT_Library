@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/xxvw/SMC_ICT_Library/blob/main/schemas/snapshot.schema.json",
+  "$id": "https://github.com/xxvw/ICT_Library_MQ5/blob/main/schemas/snapshot.schema.json",
   "title": "SMC/ICT snapshot, version 1",
   "description": "Closed-bar detection snapshot. Timestamps are broker-local wall-clock times, without a UTC suffix or offset. Unknown properties are permitted for additive version 1 extensions.",
   "type": "object",

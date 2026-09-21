@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Use synthetic or public fixtures. Remove passwords, tokens, account numbers, and private broker data from logs and screenshots.
-        For vulnerabilities, use the [security reporting policy](https://github.com/xxvw/SMC_ICT_Library/blob/main/SECURITY.md) instead of a public issue.
+        For vulnerabilities, use the [security reporting policy](https://github.com/xxvw/ICT_Library_MQ5/blob/main/SECURITY.md) instead of a public issue.
   - type: textarea
     id: behavior
     attributes:

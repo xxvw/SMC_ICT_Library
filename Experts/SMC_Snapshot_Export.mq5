@@ -1,5 +1,5 @@
 // Attach to any chart to publish ICT snapshots. This EA never places orders.
-#property copyright "SMC_ICT_Library"
+#property copyright "ICT_Library_MQ5"
 #property version "1.00"
 #property strict
 
